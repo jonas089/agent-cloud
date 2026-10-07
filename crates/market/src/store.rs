@@ -240,7 +240,7 @@ impl Db<'_> {
     pub fn insert_payment(&self, payment: &Payment, msg_index: u32) -> anyhow::Result<()> {
         self.0.execute(
             "INSERT INTO payments (tx_hash, msg_index, height, time, sender, recipient, amount_utia, memo, lease_id, outcome, fee_utia)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 payment.tx_hash,
                 msg_index,
@@ -427,4 +427,57 @@ fn enum_text<T: serde::Serialize>(value: &T) -> anyhow::Result<String> {
 
 fn parse_enum<T: serde::de::DeserializeOwned>(text: &str) -> anyhow::Result<T> {
     Ok(serde_json::from_value(serde_json::Value::String(text.to_string()))?)
+}
+
+#[cfg(test)]
+mod tests {
+    use protocol::api::{Lease, LeaseStatus, Payment};
+
+    use super::Store;
+
+    #[test]
+    fn leases_and_payments_round_trip() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let lease = Lease {
+            id: "l1".into(),
+            offer_id: "o1".into(),
+            renter: "renter".into(),
+            ssh_key: "ssh-ed25519 AAAA".into(),
+            status: LeaseStatus::Active,
+            end_reason: None,
+            created_at: 1,
+            started_at: Some(2),
+            ended_at: None,
+            paid_utia: 3,
+            price_utia_per_hour: 4,
+            grace_seconds: 5,
+            payout_address: "payout".into(),
+            connection: None,
+            agent_wallet: Some("wallet".into()),
+        };
+        let payment = Payment {
+            tx_hash: "AB".into(),
+            height: 7,
+            time: 8,
+            sender: "wallet".into(),
+            recipient: "payout".into(),
+            amount_utia: 4,
+            memo: "agentcloud:pay:l1".into(),
+            lease_id: Some("l1".into()),
+            outcome: "credited".into(),
+            fee_utia: 302,
+        };
+        store
+            .write(|db| {
+                db.insert_lease(&lease)?;
+                db.insert_payment(&payment, 0)
+            })
+            .unwrap();
+        let (leases, payments, typical) = store
+            .read(|db| Ok((db.leases_of_renter("renter")?, db.payments_of_renter("renter", 10)?, db.typical_fee()?)))
+            .unwrap();
+        assert_eq!(leases[0].agent_wallet.as_deref(), Some("wallet"));
+        assert_eq!(payments[0].fee_utia, 302);
+        assert_eq!(typical, Some(302));
+    }
 }
