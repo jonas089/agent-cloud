@@ -102,8 +102,11 @@ git push <sandbox>:app.git main    # or deploy any repo with an agent.sh
 ## Resources
 
 Ten sandboxes share one `tdx.small` CVM (1 vCPU, 2 GB). Each has its own user id, a read-only
-root, a 3 GB ext4 home it cannot exceed, a 128 MB in-memory `/tmp`, at most 1 core and 768 MB
-with 128 MB guaranteed, equal CPU shares, 512 processes, and no network path to the others.
+root, a 3 GB home, a 128 MB in-memory `/tmp`, at most 1 core and 768 MB with 128 MB guaranteed,
+equal CPU shares, 512 processes, and no network path to the host, private networks or the other
+sandboxes (DNS to the host's resolvers excepted). Where the kernel has loop devices the home is
+a fixed-size ext4 image; a Phala CVM has none, so there the quota is soft: a home over 3 GB gets
+its agent stopped and a `DISK_QUOTA_EXCEEDED.txt` notice until the renter makes room.
 Under memory pressure the sandbox using most is killed first; the provider never is. That
 fits API-driven agents (trading bots, monitors, chat and research loops, Claude Code or Codex
 on single tasks), not local models.

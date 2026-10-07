@@ -197,7 +197,8 @@ export function GuideView({ session }: { session: Session }) {
           <h2>Resources</h2>
           <p>
             Ten sandboxes share one enclave. Each gets up to one CPU core and 768 MB of memory, with 128 MB always kept for
-            it, a 3 GB disk of its own, and a fair share of the CPU when everyone is busy. That is plenty for API-driven
+            it, 3 GB of disk (go over it and the agent pauses until you make room), and a fair share of the
+            CPU when everyone is busy. That is plenty for API-driven
             agents: trading bots, monitors, research loops, chat bots and Claude Code or Codex on everyday tasks. It is not
             meant for running models locally or for heavy builds.
           </p>
