@@ -7,7 +7,8 @@
 #                   [--instance-type tdx.small] [--name agentcloud] [--sandbox-image REPO@sha256:...]
 #
 # --sandbox-image uses a sandbox image already pushed elsewhere (pinned by digest) instead of
-# building it here, for machines whose uplink cannot carry the large image.
+# building it here, for machines whose uplink cannot carry the large image. `--sandbox-image
+# build` has the provider build it inside the CVM from the recipe compiled into it.
 #
 # Rent from every lease, and the first payments the escrow forwards, go to the payout address.
 #
@@ -76,12 +77,13 @@ if [[ -z $SANDBOX_IMAGE ]]; then
   SANDBOX_IMAGE="$(build_and_push "$SANDBOX_REPO" "$ROOT/crates/provider/sandbox/Dockerfile" "$ROOT/crates/provider/sandbox")" \
     || die "building or pushing $SANDBOX_REPO failed; nothing was deployed"
 fi
-[[ $SANDBOX_IMAGE == *@sha256:* ]] || die "the sandbox image must be pinned by digest (REPO@sha256:...)"
+[[ $SANDBOX_IMAGE == build || $SANDBOX_IMAGE == *@sha256:* ]] \
+  || die "the sandbox image must be pinned by digest (REPO@sha256:...) or be 'build'"
 say "provider $PROVIDER_IMAGE"
 say "sandbox  $SANDBOX_IMAGE"
 
 COMPOSE="$DATA/phala-compose.yml"
-sed -e "s|__PROVIDER_IMAGE__|$PROVIDER_IMAGE|" -e "s|__SANDBOX_IMAGE__|$SANDBOX_IMAGE|" \
+sed -e "s|__PROVIDER_IMAGE__|$PROVIDER_IMAGE|" -e "s|__SANDBOX_IMAGE__|$SANDBOX_IMAGE|" -e '/image = "build"/d' \
     -e "s|__MARKET__|$MARKET|" -e "s|__PAYOUT__|$PAYOUT|" \
   "$ROOT/deploy/phala-compose.yml" > "$COMPOSE"
 
