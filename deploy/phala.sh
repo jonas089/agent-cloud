@@ -4,7 +4,10 @@
 # did not create.
 #
 #   deploy/phala.sh --market URL [--payout ADDRESS] [--repo ghcr.io/<you>/agentcloud-provider]
-#                   [--instance-type tdx.small] [--name agentcloud]
+#                   [--instance-type tdx.small] [--name agentcloud] [--sandbox-image REPO@sha256:...]
+#
+# --sandbox-image uses a sandbox image already pushed elsewhere (pinned by digest) instead of
+# building it here, for machines whose uplink cannot carry the large image.
 #
 # Rent from every lease, and the first payments the escrow forwards, go to the payout address.
 #
@@ -19,13 +22,14 @@ MARKET=""
 PAYOUT="celestia1d2n9pft5frjentrgfdk0tpkwa5jepf9jyc5pmg"
 REPO="ghcr.io/jonas089/agentcloud-provider"
 SANDBOX_REPO="ghcr.io/jonas089/agentcloud-sandbox"
+SANDBOX_IMAGE=""
 INSTANCE_TYPE="tdx.small"
 # Node 18 (prod9): auto-selection can land on nodes whose gateway never registers the CVM.
 NODE_ID="18"
 OS_IMAGE="dstack-0.5.9"
 NAME="agentcloud"
 
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { printf '\033[1;33m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -36,6 +40,7 @@ while [[ $# -gt 0 ]]; do
     --repo) REPO="$2"; shift 2 ;;
     --instance-type) INSTANCE_TYPE="$2"; shift 2 ;;
     --node-id) NODE_ID="$2"; shift 2 ;;
+    --sandbox-image) SANDBOX_IMAGE="$2"; shift 2 ;;
     --name) NAME="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "unknown option $1" >&2; usage 1 ;;
@@ -67,8 +72,11 @@ say "building and pushing the provider and sandbox images"
 # Assigned one by one with `|| die`: a failure inside $(...) would not stop the script.
 PROVIDER_IMAGE="$(build_and_push "$REPO" "$ROOT/deploy/provider.Dockerfile" "$ROOT")" \
   || die "building or pushing $REPO failed; nothing was deployed (is 'docker login ghcr.io' allowed to push?)"
-SANDBOX_IMAGE="$(build_and_push "$SANDBOX_REPO" "$ROOT/crates/provider/sandbox/Dockerfile" "$ROOT/crates/provider/sandbox")" \
-  || die "building or pushing $SANDBOX_REPO failed; nothing was deployed"
+if [[ -z $SANDBOX_IMAGE ]]; then
+  SANDBOX_IMAGE="$(build_and_push "$SANDBOX_REPO" "$ROOT/crates/provider/sandbox/Dockerfile" "$ROOT/crates/provider/sandbox")" \
+    || die "building or pushing $SANDBOX_REPO failed; nothing was deployed"
+fi
+[[ $SANDBOX_IMAGE == *@sha256:* ]] || die "the sandbox image must be pinned by digest (REPO@sha256:...)"
 say "provider $PROVIDER_IMAGE"
 say "sandbox  $SANDBOX_IMAGE"
 
