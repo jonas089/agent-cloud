@@ -1,20 +1,24 @@
-// Manage agents: the renter's leases, how to log in to each, and the wallet each agent pays
-// its rent from. Cancelling is a transfer signed by the renter, so it needs Keplr too.
+// Manage agents: each running agent with how to reach it and how long it is paid for, the
+// reservations still waiting for their first payment, and past leases. Paying, funding and
+// cancelling are transfers signed in Keplr.
 
 import { useState } from "react";
-import { expiresAt, market, paidUntil, sshCommand, sshConfig } from "../api";
+import { expiresAt, market, paidUntil, sshCommand, sshConfig, sshKeyCommitment } from "../api";
 import type { Account, Lease } from "../api";
 import type { Session } from "../App";
-import { duration, tia, tiaPrice, toUtia, when } from "../format";
-import { CodeBlock, Copy, LeaseChip, useNow, usePolling } from "../ui";
+import { duration, shorten, tia, tiaPrice, toUtia, when } from "../format";
+import { CodeBlock, Copy, useNow, usePolling } from "../ui";
 import { sendTia } from "../wallet";
 
 const END_REASON: Record<NonNullable<Lease["end_reason"]>, string> = {
-  unpaid: "the first payment never arrived",
-  outbid: "someone else took the last slot first, payment refunded",
-  expired: "rent stopped for longer than the grace period",
-  cancelled: "cancelled by you",
+  unpaid: "never paid",
+  outbid: "slot taken first, refunded",
+  expired: "rent ran out",
+  cancelled: "cancelled",
 };
+
+/** Where a key generated on the Market tab is saved. */
+const keyFile = (lease: Lease) => `~/Downloads/agentcloud-${lease.offer_id}.key`;
 
 export function AgentsView({ session }: { session: Session }) {
   const { address } = session;
@@ -25,7 +29,7 @@ export function AgentsView({ session }: { session: Session }) {
     return (
       <div className="panel narrow">
         <h2>Manage agents</h2>
-        <p className="muted">Connect Keplr to see your sandboxes, how to reach them and their wallets.</p>
+        <p className="muted">Connect Keplr to see your agents, how to reach them and their wallets.</p>
         <button className="primary" onClick={() => session.connect().catch(() => {})}>
           Connect Keplr
         </button>
@@ -33,10 +37,11 @@ export function AgentsView({ session }: { session: Session }) {
     );
   }
 
-  const all = account.value?.leases ?? [];
-  const live = all.filter((lease) => lease.status !== "ended");
-  const ended = all.filter((lease) => lease.status === "ended");
-  const offerName = (id: string) => offers.value?.find((offer) => offer.id === id)?.name ?? id;
+  const leases = account.value?.leases ?? [];
+  const active = leases.filter((lease) => lease.status === "active");
+  const pending = leases.filter((lease) => lease.status === "pending");
+  const ended = leases.filter((lease) => lease.status === "ended");
+  const offerName = (id: string) => offers.value?.find((offer) => offer.id === id)?.name ?? "Sandbox";
 
   return (
     <div className="stack">
@@ -44,14 +49,14 @@ export function AgentsView({ session }: { session: Session }) {
 
       <section>
         <h2 className="section-title">Your agents</h2>
-        {account.value && live.length === 0 && (
+        {account.value && active.length === 0 && (
           <div className="panel empty">
-            Nothing running right now. <a href="#market">Start an agent</a>.
+            No agent running. <a href="#market">Rent a sandbox</a> to start one.
           </div>
         )}
-        <div className="lease-grid">
-          {live.map((lease) => (
-            <LeaseCard
+        <div className="stack">
+          {active.map((lease) => (
+            <AgentCard
               key={lease.id}
               lease={lease}
               name={offerName(lease.offer_id)}
@@ -63,6 +68,17 @@ export function AgentsView({ session }: { session: Session }) {
         </div>
       </section>
 
+      {pending.length > 0 && (
+        <section>
+          <h2 className="section-title">Waiting for payment</h2>
+          <div className="panel list-panel">
+            {pending.map((lease) => (
+              <PendingRow key={lease.id} lease={lease} name={offerName(lease.offer_id)} session={session} />
+            ))}
+          </div>
+        </section>
+      )}
+
       {ended.length > 0 && (
         <section>
           <h2 className="section-title">Past leases</h2>
@@ -71,7 +87,7 @@ export function AgentsView({ session }: { session: Session }) {
               <thead>
                 <tr>
                   <th>Lease</th>
-                  <th>Machine</th>
+                  <th>Sandbox</th>
                   <th>Paid</th>
                   <th>Ended</th>
                   <th>Why</th>
@@ -96,7 +112,7 @@ export function AgentsView({ session }: { session: Session }) {
   );
 }
 
-interface LeaseCardProps {
+interface AgentCardProps {
   lease: Lease;
   name: string;
   account: Account;
@@ -104,115 +120,143 @@ interface LeaseCardProps {
   onSent: () => void;
 }
 
-function LeaseCard({ lease, name, account, session, onSent }: LeaseCardProps) {
+function AgentCard({ lease, name, account, session, onSent }: AgentCardProps) {
   const now = useNow();
   const [notice, setNotice] = useState<string | null>(null);
-  const until = paidUntil(lease);
-  const expires = expiresAt(lease);
+  const until = paidUntil(lease) ?? now;
+  const expires = expiresAt(lease) ?? now;
   const wallet = account.agent_wallets.find((w) => w.lease_id === lease.id);
-  const perHour = lease.price_utia_per_hour + (session.config.typical_fee_utia ?? 0);
+  const health = until - now > 600 ? "good" : now < until ? "due" : "grace";
 
   const cancel = async () => {
     if (!window.confirm("End this lease now? The sandbox and everything in it are deleted.")) return;
     try {
       setNotice("Approve the cancellation in Keplr");
       await sendTia(session.config.chain, account.address, lease.payout_address, 1, `agentcloud:cancel:${lease.id}`);
-      setNotice("Cancellation sent. The sandbox is wiped within a minute and the agent's wallet is returned to you.");
+      setNotice("Cancelled. The sandbox is wiped within a minute and the wallet's balance comes back to you.");
     } catch (e) {
       setNotice(`Could not cancel: ${(e as Error).message}`);
     }
   };
 
   return (
-    <article className="panel lease">
-      <div className="offer-head">
+    <article className="panel agent">
+      <header className="agent-head">
         <div>
           <h3>{name}</h3>
           <span className="muted mono">lease {lease.id}</span>
         </div>
-        <LeaseChip lease={lease} />
-      </div>
+        <span className={`status ${health === "good" ? "status-active" : "status-warn"}`}>
+          {health === "good" ? "Running" : health === "due" ? "Rent due" : "In grace period"}
+        </span>
+      </header>
 
-      {lease.status === "pending" && (
-        <p className="wait">Waiting for the first payment. Unpaid leases lapse after 30 minutes.</p>
-      )}
-
-      {lease.status === "active" && (
-        <>
+      <div className="agent-grid">
+        <div className="agent-connect">
           {lease.connection ? (
             <>
-              <span className="label">Add to ~/.ssh/config</span>
-              <CodeBlock code={sshConfig(lease.connection, lease.id, `~/Downloads/agentcloud-${lease.offer_id}.key`)} />
-              <span className="label">Then connect and start an agent</span>
-              <CodeBlock code={`ssh agentcloud-${lease.id}\nagent init openai`} />
+              <ol className="steps">
+                <li>
+                  <span>
+                    Add this to <code>~/.ssh/config</code>
+                  </span>
+                  <CodeBlock code={sshConfig(lease.connection, lease.id, keyFile(lease))} />
+                </li>
+                <li>
+                  <span>Connect, pick a model and paste its API key</span>
+                  <CodeBlock code={`ssh agentcloud-${lease.id}\nagent init openai\nagent secret set OPENAI_API_KEY`} />
+                </li>
+                <li>
+                  <span>
+                    Put the job in <code>~/app/TASK.md</code> and follow it with <code>agent logs -f</code>
+                  </span>
+                </li>
+              </ol>
               <p className="hint">
-                Change <code>IdentityFile</code> if your key lives elsewhere. One-off without the config:{" "}
-                <Copy text={sshCommand(lease.connection, `~/Downloads/agentcloud-${lease.offer_id}.key`)}>
-                  <code>copy the full ssh command</code>
+                Key saved elsewhere? Change <code>IdentityFile</code>. No config file?{" "}
+                <Copy text={sshCommand(lease.connection, keyFile(lease))}>
+                  <span className="linklike">Copy a one-line ssh command</span>
                 </Copy>
-                .
               </p>
             </>
           ) : (
-            <p className="wait">The enclave is checking your key commitment on chain and starting your sandbox.</p>
+            <p className="wait">Checking your key on chain and starting the sandbox. This takes a few seconds.</p>
           )}
+        </div>
 
+        <div className="agent-rent">
+          <RentMeter until={until} now={now} expires={expires} />
+          <dl className="facts">
+            <dt>Paid until</dt>
+            <dd>{when(until)}</dd>
+            <dt>Wiped if unpaid</dt>
+            <dd>{when(expires)}</dd>
+            <dt>Rent</dt>
+            <dd>{tiaPrice(lease.price_utia_per_hour)} per hour</dd>
+            <dt>Paid so far</dt>
+            <dd>{tiaPrice(lease.paid_utia)}</dd>
+          </dl>
           {wallet && (
             <FundWallet
               address={wallet.address}
               balance={wallet.balance_utia}
-              hours={Math.floor(wallet.balance_utia / perHour)}
+              hourly={lease.price_utia_per_hour + (session.config.typical_fee_utia ?? 0)}
               session={session}
               from={account.address}
               onSent={onSent}
             />
           )}
-
-          <dl className="facts">
-            <dt>Paid until</dt>
-            <dd>
-              {until && (until > now ? `${when(until)}, ${duration(until - now)} left` : `${duration(now - until)} overdue`)}
-            </dd>
-            <dt>Wiped at</dt>
-            <dd>{expires && `${when(expires)} unless paid, in ${duration(expires - now)}`}</dd>
-            <dt>Rent</dt>
-            <dd>{tiaPrice(lease.price_utia_per_hour)} per hour</dd>
-            <dt>Paid so far</dt>
-            <dd>{tia(lease.paid_utia)}</dd>
-          </dl>
           {notice ? (
             <p className="notice">{notice}</p>
           ) : (
-            <button className="danger" onClick={cancel}>
+            <button className="linklike danger-link" onClick={cancel}>
               Cancel lease
             </button>
           )}
-        </>
-      )}
+        </div>
+      </div>
     </article>
+  );
+}
+
+/** How much of the prepaid hour is left, then how much of the grace period. */
+function RentMeter({ until, now, expires }: { until: number; now: number; expires: number }) {
+  const left = until - now;
+  const share = Math.max(0, Math.min(1, left / 3600));
+  return (
+    <div className="meter">
+      <div className="meter-head">
+        <span className="label">Prepaid time</span>
+        <strong>{left > 0 ? `${duration(left)} left` : `grace ends in ${duration(Math.max(0, expires - now))}`}</strong>
+      </div>
+      <div className="meter-track">
+        <div className={`meter-fill${left <= 600 ? " low" : ""}`} style={{ width: `${share * 100}%` }} />
+      </div>
+    </div>
   );
 }
 
 interface FundWalletProps {
   address: string;
   balance: number;
-  /** Whole hours of rent the balance pays for. */
-  hours: number;
+  /** Rent plus gas for one hour. */
+  hourly: number;
   session: Session;
   from: string;
   onSent: () => void;
 }
 
-/** The agent's wallet, with a Keplr top-up. */
-function FundWallet({ address, balance, hours, session, from, onSent }: FundWalletProps) {
+/** The wallet the agent pays its rent from, with a Keplr top-up. */
+function FundWallet({ address, balance, hourly, session, from, onSent }: FundWalletProps) {
   const [amount, setAmount] = useState("2");
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const hours = Math.floor(balance / hourly);
 
   const send = async () => {
     try {
-      setMessage(null);
+      setMessage({ ok: true, text: "Approve the transfer in Keplr" });
       await sendTia(session.config.chain, from, address, toUtia(amount), "agentcloud agent wallet top-up");
-      setMessage({ ok: true, text: "Sent. The balance updates once it lands." });
+      setMessage({ ok: true, text: "Sent. The balance updates in a few seconds." });
       onSent();
     } catch (e) {
       setMessage({ ok: false, text: (e as Error).message });
@@ -221,24 +265,64 @@ function FundWallet({ address, balance, hours, session, from, onSent }: FundWall
 
   return (
     <div className="agent-wallet">
-      <span className="label">Agent wallet</span>
-      <div className="agent-wallet-row">
-        <Copy text={address} />
-        <strong>{tia(balance)}</strong>
+      <div className="agent-wallet-head">
+        <span className="label">Agent wallet</span>
+        <Copy text={address}>
+          <code>{shorten(address, 6)}</code>
+        </Copy>
       </div>
-      <p className={hours < 2 ? "error" : "hint"}>
-        {hours === 0 ? "Not enough for the next hour. Fund it before the grace period runs out." : `Pays about ${duration(hours * 3600)} of rent.`}
-      </p>
-      <div className="form-row">
-        <label className="field grow">
-          <span>Top up in TIA</span>
-          <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" />
-        </label>
+      <div className="agent-wallet-balance">
+        <strong>{tiaPrice(balance)}</strong>
+        <span className={hours < 2 ? "runway low" : "runway"}>
+          {hours === 0 ? "not enough for the next hour" : `about ${duration(hours * 3600)} of rent`}
+        </span>
+      </div>
+      <div className="fund-row">
+        <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" aria-label="TIA to send" />
+        <span className="unit">TIA</span>
         <button className="primary inline" onClick={send}>
           Fund
         </button>
       </div>
-      {message && <p className={message.ok ? "success" : "error"}>{message.text}</p>}
+      {message && <p className={message.ok ? "hint" : "error"}>{message.text}</p>}
+    </div>
+  );
+}
+
+/** A reservation whose first payment has not landed: pay it now, or let it lapse. */
+function PendingRow({ lease, name, session }: { lease: Lease; name: string; session: Session }) {
+  const now = useNow();
+  const [state, setState] = useState<string | null>(null);
+  const lapses = lease.created_at + 30 * 60;
+  const amount = lease.price_utia_per_hour + session.config.escrow_fee_utia;
+
+  const pay = async () => {
+    if (!session.address) return;
+    try {
+      setState("Approve the payment in Keplr");
+      const memo = `agentcloud:activate:${lease.id}:${await sshKeyCommitment(lease.ssh_key)}`;
+      await sendTia(session.config.chain, session.address, session.config.escrow_address, amount, memo);
+      setState("Paid. The sandbox starts within a minute.");
+    } catch (e) {
+      setState(`Payment failed: ${(e as Error).message}`);
+    }
+  };
+
+  return (
+    <div className="pending-row">
+      <div className="pending-main">
+        <strong>{name}</strong> <span className="muted mono">lease {lease.id}</span>
+        <div className="muted small">
+          Reserved {when(lease.created_at)}, lapses {lapses > now ? `in ${duration(lapses - now)}` : "now"}
+        </div>
+      </div>
+      {state ? (
+        <span className="small pending-state">{state}</span>
+      ) : (
+        <button className="secondary inline" onClick={pay}>
+          Pay {tiaPrice(amount)} now
+        </button>
+      )}
     </div>
   );
 }

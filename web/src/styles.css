@@ -111,6 +111,7 @@ h1, h2, h3 { font-family: var(--display); letter-spacing: -0.01em; margin: 0; }
 .status-pending { color: var(--info); background: var(--info-soft); }
 .status-pending::before { animation: blink 1.4s infinite; }
 .status-ended { color: var(--muted); background: var(--bg-2); }
+.status-warn { color: var(--coral); background: var(--bad-soft); }
 @keyframes blink { 50% { opacity: 0.25; } }
 
 /* ------------------------------------------------------------------ copy, code */
@@ -236,11 +237,57 @@ h1, h2, h3 { font-family: var(--display); letter-spacing: -0.01em; margin: 0; }
   .stats { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* ------------------------------------------------------------------ agent wallet */
+/* ------------------------------------------------------------------ manage agents */
 
-.agent-wallet { margin-top: 1.1rem; padding: 1rem; border-radius: var(--radius-sm); background: var(--bg-2); }
-.agent-wallet .label { margin-top: 0; }
-.agent-wallet-row { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-top: 0.35rem; }
-.agent-wallet-row strong { font-family: var(--display); font-size: 1.2rem; color: var(--accent); white-space: nowrap; }
-.agent-wallet .form-row { margin-top: 0.75rem; }
-.agent-wallet .field input { background: var(--surface); }
+.agent { padding: 1.5rem 1.75rem; }
+.agent-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; padding-bottom: 1.1rem; margin-bottom: 1.4rem; border-bottom: 1px solid var(--line); }
+.agent-head h3 { font-size: 1.2rem; font-weight: 600; }
+.agent-head .muted { font-size: 0.82rem; }
+.agent-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 2rem; align-items: start; }
+.agent-connect, .agent-rent { min-width: 0; }
+.agent-rent { display: flex; flex-direction: column; gap: 1.1rem; }
+.agent-rent .facts { margin: 0; }
+
+.steps { list-style: none; counter-reset: step; margin: 0; padding: 0; display: grid; gap: 1.1rem; }
+.steps li { counter-increment: step; position: relative; padding-left: 2.1rem; min-width: 0; }
+.steps li::before { content: counter(step); position: absolute; left: 0; top: 0.05rem; width: 1.45rem; height: 1.45rem; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 0.78rem; }
+.steps li > span { display: block; color: var(--grey); font-size: 0.9rem; }
+.steps code, .hint code { background: var(--bg-2); padding: 0.05rem 0.35rem; border-radius: 5px; }
+
+.meter-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-bottom: 0.5rem; }
+.meter-head .label { margin: 0; }
+.meter-head strong { font-family: var(--display); font-weight: 600; }
+.meter-track { height: 8px; border-radius: 999px; background: var(--bg-2); overflow: hidden; }
+.meter-fill { height: 100%; border-radius: 999px; background: var(--accent); transition: width 1s linear; }
+.meter-fill.low { background: var(--coral); }
+
+.agent-wallet { padding: 1rem 1.1rem; border-radius: var(--radius-sm); background: var(--bg-2); }
+.agent-wallet-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.agent-wallet-head .label { margin: 0; }
+.agent-wallet-head code { font-size: 0.8rem; color: var(--grey); }
+.agent-wallet-balance { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.25rem 0.75rem; margin: 0.45rem 0 0.85rem; }
+.agent-wallet-balance strong { font-family: var(--display); font-size: 1.6rem; font-weight: 600; color: var(--accent); white-space: nowrap; }
+.runway { color: var(--muted); font-size: 0.85rem; }
+.runway.low { color: var(--coral); }
+.fund-row { display: flex; align-items: center; gap: 0.6rem; }
+.fund-row input { flex: 1; min-width: 0; border: 0; border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); padding: 0.7rem 0.9rem; font-family: var(--mono); font-size: 0.9rem; outline: 0; }
+.fund-row input:focus { box-shadow: inset 0 0 0 1px var(--accent-line); }
+.fund-row .unit { color: var(--muted); font-size: 0.85rem; font-weight: 600; }
+.fund-row .primary.inline { padding: 0.65rem 1.3rem; }
+.agent-wallet .hint, .agent-wallet .error { margin-top: 0.6rem; }
+
+.danger-link { color: var(--coral); align-self: flex-start; font-size: 0.86rem; }
+.secondary.inline { width: auto; margin: 0; padding: 0.55rem 1rem; white-space: nowrap; }
+
+.list-panel { padding: 0.4rem 1.2rem; }
+.pending-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0.9rem 0; border-bottom: 1px solid var(--line); }
+.pending-row:last-child { border-bottom: 0; }
+.pending-main { min-width: 0; }
+.pending-main .mono { font-size: 0.8rem; }
+.pending-state { color: var(--grey); text-align: right; max-width: 50%; }
+.small { font-size: 0.82rem; }
+
+@media (max-width: 960px) {
+  .agent-grid { grid-template-columns: minmax(0, 1fr); }
+  .agent { padding: 1.25rem; }
+}
