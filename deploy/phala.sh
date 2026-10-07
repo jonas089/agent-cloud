@@ -20,6 +20,9 @@ PAYOUT="celestia1d2n9pft5frjentrgfdk0tpkwa5jepf9jyc5pmg"
 REPO="ghcr.io/jonas089/agentcloud-provider"
 SANDBOX_REPO="ghcr.io/jonas089/agentcloud-sandbox"
 INSTANCE_TYPE="tdx.small"
+# Node 18 (prod9): auto-selection can land on nodes whose gateway never registers the CVM.
+NODE_ID="18"
+OS_IMAGE="dstack-0.5.9"
 NAME="agentcloud"
 
 usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
@@ -32,6 +35,7 @@ while [[ $# -gt 0 ]]; do
     --payout) PAYOUT="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
     --instance-type) INSTANCE_TYPE="$2"; shift 2 ;;
+    --node-id) NODE_ID="$2"; shift 2 ;;
     --name) NAME="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "unknown option $1" >&2; usage 1 ;;
@@ -50,13 +54,21 @@ mkdir -p "$DATA"
 # Both images are pinned by digest in the compose file, so the attestation covers exactly
 # the code that runs: the provider and the sandbox every lease gets.
 build_and_push() { # <repository> <dockerfile> <context>; prints the pinned reference
+  rm -f "$DATA/image.json"
   docker buildx build --platform linux/amd64 -f "$2" --tag "$1:latest" \
-    --metadata-file "$DATA/image.json" --push "$3" >&2
-  echo "$1@$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$DATA/image.json")"
+    --metadata-file "$DATA/image.json" --push "$3" >&2 || return 1
+  local digest
+  digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$DATA/image.json")" \
+    || return 1
+  [[ $digest == sha256:* ]] || return 1
+  echo "$1@$digest"
 }
 say "building and pushing the provider and sandbox images"
-PROVIDER_IMAGE="$(build_and_push "$REPO" "$ROOT/deploy/provider.Dockerfile" "$ROOT")"
-SANDBOX_IMAGE="$(build_and_push "$SANDBOX_REPO" "$ROOT/crates/provider/sandbox/Dockerfile" "$ROOT/crates/provider/sandbox")"
+# Assigned one by one with `|| die`: a failure inside $(...) would not stop the script.
+PROVIDER_IMAGE="$(build_and_push "$REPO" "$ROOT/deploy/provider.Dockerfile" "$ROOT")" \
+  || die "building or pushing $REPO failed; nothing was deployed (is 'docker login ghcr.io' allowed to push?)"
+SANDBOX_IMAGE="$(build_and_push "$SANDBOX_REPO" "$ROOT/crates/provider/sandbox/Dockerfile" "$ROOT/crates/provider/sandbox")" \
+  || die "building or pushing $SANDBOX_REPO failed; nothing was deployed"
 say "provider $PROVIDER_IMAGE"
 say "sandbox  $SANDBOX_IMAGE"
 
@@ -74,7 +86,8 @@ if [[ -f $DATA/phala-app-id ]]; then
   phala deploy --cvm-id "$APP_ID" --compose "$COMPOSE" --wait
 else
   say "deploying a new $INSTANCE_TYPE CVM named $NAME"
-  OUT="$(phala deploy --name "$NAME" --compose "$COMPOSE" --instance-type "$INSTANCE_TYPE" --no-dev-os --wait --json 2>&1)" \
+  OUT="$(phala deploy --name "$NAME" --compose "$COMPOSE" --instance-type "$INSTANCE_TYPE" --node-id "$NODE_ID" \
+    --image "$OS_IMAGE" --no-dev-os --wait --json 2>&1)" \
     || { printf '%s\n' "$OUT" >&2; die "phala deploy failed"; }
   # The CLI prints progress before its JSON, so take the first app id found in any JSON object.
   APP_ID="$(printf '%s' "$OUT" | python3 -c '
