@@ -103,6 +103,17 @@ impl Provider {
     }
 
     async fn reconcile_sandboxes(&mut self, leases: &[Lease]) -> anyhow::Result<()> {
+        self.start_and_report(leases).await?;
+        for sandbox in self.sandboxes.list().await?.iter().filter(|s| s.running) {
+            if let Err(error) = self.sandboxes.enforce_disk_quota(sandbox, self.offer.disk_gb).await {
+                tracing::warn!(lease = %sandbox.lease_id, "checking the disk quota failed: {error:#}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Wipes sandboxes of ended leases, starts the missing ones, and reports new ones.
+    async fn start_and_report(&mut self, leases: &[Lease]) -> anyhow::Result<()> {
         let mut running = self.sandboxes.list().await?;
         for sandbox in running.iter().filter(|s| !leases.iter().any(|lease| lease.id == s.lease_id)) {
             self.sandboxes.wipe(&sandbox.lease_id).await?;

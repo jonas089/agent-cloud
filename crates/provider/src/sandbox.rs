@@ -47,6 +47,8 @@ const PRIVATE_RANGES: [&str; 5] = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/1
 /// The account renters log in as and the port its sshd listens on, both set by the Dockerfile.
 const USER: &str = "agent";
 const SSH_PORT: u16 = 2222;
+/// Dropped in a home that is over its quota.
+const QUOTA_NOTICE: &str = "DISK_QUOTA_EXCEEDED.txt";
 /// Sandbox `n` (by port) runs as user and group `FIRST_UID + n`.
 const FIRST_UID: u32 = 10_000;
 
@@ -242,10 +244,42 @@ impl Sandboxes {
         if self.config.disk_quota {
             match self.mount_quota_home(lease_id, uid, disk_gb).await {
                 Ok(()) => return Ok(()),
-                Err(error) => tracing::warn!(lease = lease_id, "disk quota unavailable, home is unbounded: {error:#}"),
+                Err(error) => {
+                    tracing::warn!(lease = lease_id, "no hard disk quota here, enforcing it softly: {error:#}");
+                    let _ = std::fs::remove_file(self.files.join(lease_id).join("home.img"));
+                }
             }
         }
         std::os::unix::fs::chown(&home, Some(uid), Some(uid)).context("handing the home to its user")
+    }
+
+    /// The soft disk quota, for hosts without loop devices (a Phala CVM has none): a home over
+    /// `disk_gb` gets its agent stopped and a notice saying why, while SSH keeps working so
+    /// the renter can make room; once it is back under, the agent starts again. Homes on a
+    /// real fixed-size filesystem never get here, since the provider sees only the empty
+    /// directory beneath the mount.
+    pub async fn enforce_disk_quota(&self, sandbox: &Sandbox, disk_gb: u32) -> anyhow::Result<()> {
+        let home = self.files.join(&sandbox.lease_id).join("home");
+        let notice = home.join(QUOTA_NOTICE);
+        let limit = u64::from(disk_gb) << 30;
+        let over = disk_usage(&home, limit) > limit;
+        let uid = FIRST_UID + u32::from(sandbox.port - self.config.first_port);
+        let agent = |command: &'static str| {
+            let user = format!("--user={uid}:{uid}");
+            let container = container_name(&sandbox.lease_id);
+            async move { docker(&["exec", &user, &container, "agent", command]).await.map(drop) }
+        };
+        if over && !notice.exists() {
+            std::fs::write(&notice, format!("This home is over its {disk_gb} GB quota, so the agent is stopped.\nDelete files until it is under; the agent then starts again by itself.\n"))?;
+            std::os::unix::fs::chown(&notice, Some(uid), Some(uid))?;
+            agent("stop").await?;
+            tracing::warn!(lease = %sandbox.lease_id, "home over its disk quota, agent stopped");
+        } else if !over && notice.exists() {
+            std::fs::remove_file(&notice)?;
+            agent("start").await?;
+            tracing::info!(lease = %sandbox.lease_id, "home back under its disk quota, agent started");
+        }
+        Ok(())
     }
 
     async fn mount_quota_home(&self, lease_id: &str, uid: u32, disk_gb: u32) -> anyhow::Result<()> {
@@ -336,6 +370,27 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
+/// Bytes of disk used under `dir`, counted until `limit` is passed. Symlinks are not followed.
+fn disk_usage(dir: &Path, limit: u64) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let mut used = 0;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let Ok(metadata) = entry.path().symlink_metadata() else { continue };
+            used += metadata.blocks() * 512;
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            }
+            if used > limit {
+                return used;
+            }
+        }
+    }
+    used
+}
+
 fn container_name(lease_id: &str) -> String {
     format!("agentcloud-{lease_id}")
 }
@@ -386,4 +441,17 @@ async fn docker(args: &[&str]) -> anyhow::Result<String> {
         bail!("docker {} failed: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&output.stderr).trim());
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn disk_usage_counts_files_and_stops_past_the_limit() {
+        let dir = std::env::temp_dir().join(format!("agentcloud-usage-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("nested/data"), vec![1u8; 1 << 20]).unwrap();
+        assert!(super::disk_usage(&dir, u64::MAX) >= 1 << 20);
+        assert!(super::disk_usage(&dir, 1000) > 1000);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
