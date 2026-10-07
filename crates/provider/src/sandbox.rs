@@ -207,11 +207,7 @@ impl Sandboxes {
     pub async fn wipe(&self, lease_id: &str) -> anyhow::Result<()> {
         docker(&["rm", "--force", &container_name(lease_id)]).await?;
         let home = self.host_files.join(lease_id).join("home");
-        self.as_host_root(
-            &self.host_files.join(lease_id),
-            &format!("umount -l '{}' 2>/dev/null || true", home.display()),
-        )
-        .await?;
+        self.as_host_root(&format!("umount -l '{}' 2>/dev/null || true", home.display())).await?;
         let dir = self.files.join(lease_id);
         if dir.exists() {
             std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
@@ -264,12 +260,17 @@ impl Sandboxes {
         }
         let dir = self.host_files.join(lease_id);
         let (image, home) = (dir.join("home.img"), dir.join("home"));
+        // Verified afterwards: a mount that silently did not happen would leave the home
+        // unbounded on the shared disk.
         let script = format!(
-            "mountpoint -q '{home}' || mount -o loop '{image}' '{home}'; chown {uid}:{uid} '{home}'",
+            "set -e
+             mountpoint -q '{home}' || mount -o loop '{image}' '{home}'
+             mountpoint -q '{home}'
+             chown {uid}:{uid} '{home}'",
             home = home.display(),
             image = image.display()
         );
-        self.as_host_root(&dir, &script).await.map(drop)
+        self.as_host_root(&script).await.map(drop)
     }
 
     /// Firewall rules on the host: a sandbox may not open connections to the host itself or to
@@ -287,6 +288,13 @@ impl Sandboxes {
              add INPUT -i {BRIDGE} -j DROP
              add INPUT -i {BRIDGE} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
              {private}
+             # DNS to the host's own resolvers, which may sit in a private range.
+             for ns in $(awk '/^nameserver/ && $2 !~ /:/ {{print $2}}' /etc/resolv.conf); do
+               for proto in udp tcp; do
+                 add DOCKER-USER -i {BRIDGE} -d $ns -p $proto --dport 53 -j RETURN
+                 add INPUT -i {BRIDGE} -d $ns -p $proto --dport 53 -j ACCEPT
+               done
+             done
              add DOCKER-USER -i {BRIDGE} -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN",
             private = private.join("\n             ")
         );
@@ -307,25 +315,14 @@ impl Sandboxes {
         Ok(())
     }
 
-    /// Runs `script` as root on the host's filesystem, in a short-lived privileged container
-    /// that sees `dir` at the same path with mounts propagating back to the host. The provider
-    /// holds the Docker socket, so this grants nothing it does not already have.
-    async fn as_host_root(&self, dir: &Path, script: &str) -> anyhow::Result<String> {
-        let mount = format!("--volume={}:{}:rshared", dir.display(), dir.display());
-        docker(&[
-            "run",
-            "--rm",
-            "--privileged",
-            "--user=0",
-            "--network=none",
-            &mount,
-            "--entrypoint",
-            "sh",
-            &self.image,
-            "-c",
-            script,
-        ])
-        .await
+    /// Runs `script` as root in the host's own mount namespace, from a short-lived privileged
+    /// container, so mounts land on the host whatever its mount propagation (a TEE's data disk
+    /// does not propagate). Paths are as the Docker daemon sees them. The provider holds the
+    /// Docker socket, so this grants nothing it does not already have.
+    async fn as_host_root(&self, script: &str) -> anyhow::Result<String> {
+        let args = ["run", "--rm", "--privileged", "--user=0", "--pid=host", "--network=none", "--entrypoint"];
+        let nsenter = ["nsenter", &self.image, "-t", "1", "-m", "--", "sh", "-c", script];
+        docker(&args.iter().chain(nsenter.iter()).copied().collect::<Vec<_>>()).await
     }
 }
 
