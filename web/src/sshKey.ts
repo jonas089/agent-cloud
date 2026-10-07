@@ -1,6 +1,9 @@
-// An Ed25519 SSH key pair made in the browser with WebCrypto, for renters without a key at
-// hand. The private key never leaves the page: it is offered as a download and only the
-// public half is sent to the market.
+// An Ed25519 SSH key pair made in the browser, for renters without a key at hand. The private
+// key never leaves the page: it is offered as a download and only the public half is sent to
+// the market. Uses @noble/curves with the browser's random generator, which unlike WebCrypto's
+// key functions also works on plain http.
+
+import { ed25519 } from "@noble/curves/ed25519";
 
 export interface SshKeyPair {
   publicKey: string;
@@ -8,10 +11,8 @@ export interface SshKeyPair {
 }
 
 export async function generateSshKey(comment: string): Promise<SshKeyPair> {
-  const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as CryptoKeyPair;
-  const publicRaw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
-  // PKCS#8 for Ed25519 is a fixed 16-byte header followed by the 32-byte seed.
-  const seed = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey)).slice(-32);
+  const seed = crypto.getRandomValues(new Uint8Array(32));
+  const publicRaw = ed25519.getPublicKey(seed);
   const publicBlob = concat(sshString("ssh-ed25519"), sshString(publicRaw));
   return {
     publicKey: `ssh-ed25519 ${base64(publicBlob)} ${comment}`,

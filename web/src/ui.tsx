@@ -46,15 +46,29 @@ export function Copy({ text, children }: { text: string; children?: ReactNode })
       className={`copy${copied ? " copied" : ""}`}
       title="Copy"
       onClick={() => {
-        navigator.clipboard.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1400);
-        });
+        copyText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1400);
       }}
     >
       {children ?? <code>{text}</code>}
     </button>
   );
+}
+
+/** The clipboard API exists only on https; plain http falls back to a hidden textarea. */
+function copyText(text: string) {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).catch(() => {});
+    return;
+  }
+  const area = Object.assign(document.createElement("textarea"), { value: text });
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  document.execCommand("copy");
+  area.remove();
 }
 
 export function CodeBlock({ code }: { code: string }) {

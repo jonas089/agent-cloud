@@ -1,6 +1,8 @@
 // The market's HTTP API. Types mirror `crates/protocol/src/api.rs`; amounts are utia and
 // times are unix seconds.
 
+import { sha256 } from "@noble/hashes/sha256";
+
 export interface ChainConfig {
   chain_id: string;
   rest: string;
@@ -156,10 +158,13 @@ export function sshConfig(c: Connection, lease: string, identity: string): strin
   return lines.join("\n");
 }
 
-/** The renter's commitment to their SSH key, as `ssh_key_commitment` computes it. */
+/**
+ * The renter's commitment to their SSH key, as `ssh_key_commitment` computes it. Pure JS, so
+ * it also works on plain http, where browsers withhold WebCrypto.
+ */
 export async function sshKeyCommitment(sshKey: string): Promise<string> {
   const key = sshKey.trim().split(/\s+/).slice(0, 2).join(" ");
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key)));
+  const digest = sha256(new TextEncoder().encode(key));
   return Array.from(digest.slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
