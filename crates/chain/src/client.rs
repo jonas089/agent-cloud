@@ -1,6 +1,7 @@
 //! REST client for the few queries and the one transaction type agentcloud needs.
 
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
 use base64::Engine;
@@ -18,10 +19,15 @@ use crate::{cosmrs_error, Wallet};
 /// Transfers per page when searching. The SDK caps pages at 100.
 const PAGE_SIZE: usize = 100;
 
+/// How long a learned gas price is trusted before the node is asked again.
+const GAS_PRICE_TTL: Duration = Duration::from_secs(600);
+
 #[derive(Clone)]
 pub struct Chain {
     http: reqwest::Client,
     config: ChainConfig,
+    /// The node's minimum gas price, and when it was learned.
+    gas_price: Arc<Mutex<Option<(f64, Instant)>>>,
 }
 
 /// One bank send, taken out of a successful transaction.
@@ -37,6 +43,8 @@ pub struct Transfer {
     /// In the chain's base denom; transfers of other denoms are skipped.
     pub amount: u64,
     pub memo: String,
+    /// The fee its transaction paid, in the base denom.
+    pub fee: u64,
 }
 
 /// A transaction signed and ready to broadcast. Its hash is known before broadcasting, so a
@@ -45,9 +53,15 @@ pub struct SignedTx {
     pub hash: String,
     pub bytes: Vec<u8>,
     /// The signer's account sequence it was signed for. Two transactions with the same
-    /// sequence can never both land, and signing is deterministic, so re-signing a payment
-    /// that has not landed yet reproduces the same transaction.
+    /// sequence can never both land.
     pub sequence: u64,
+}
+
+/// What a transaction pays: its gas limit and the fee for it, both from the chain.
+#[derive(Clone, Copy, Debug)]
+pub struct TxFee {
+    pub gas: u64,
+    pub amount: u64,
 }
 
 /// The newest block the node knows about.
@@ -66,7 +80,7 @@ pub struct IncludedTx {
 impl Chain {
     pub fn new(config: ChainConfig) -> Self {
         let http = reqwest::Client::builder().timeout(Duration::from_secs(20)).build().expect("http client");
-        Self { http, config }
+        Self { http, config, gas_price: Arc::new(Mutex::new(None)) }
     }
 
     pub fn config(&self) -> &ChainConfig {
@@ -101,8 +115,60 @@ impl Chain {
         }))
     }
 
-    /// Signs a bank send of `amount` base units with `memo`, paying the configured fee.
-    pub async fn sign_send(&self, wallet: &Wallet, to: &str, amount: u64, memo: &str) -> anyhow::Result<SignedTx> {
+    /// The minimum gas price the node we broadcast through enforces, learned at most every
+    /// ten minutes. Nodes do not reliably publish it, but each names it when turning down a
+    /// transaction that pays too little, so `wallet` sends itself a free 1 utia transfer and
+    /// the rejection gives the price. (A node that accepted it would move 1 utia from the
+    /// wallet to itself, for nothing.) A wallet not on chain yet falls back to the node's
+    /// configured minimum.
+    pub async fn gas_price(&self, wallet: &Wallet) -> anyhow::Result<f64> {
+        if let Some((price, learned)) = *self.gas_price.lock().expect("gas price lock") {
+            if learned.elapsed() < GAS_PRICE_TTL {
+                return Ok(price);
+            }
+        }
+        let me = wallet.address().to_string();
+        let price = if self.account(&me).await?.is_some() {
+            let probe = TxFee { gas: 100_000, amount: 0 };
+            let tx = self.sign_send(wallet, &me, 1, "agentcloud gas price probe", probe).await?;
+            match self.broadcast(&tx.bytes).await {
+                Ok(_) => 0.0,
+                Err(error) => minimum_from_rejection(&error.to_string())?,
+            }
+        } else {
+            self.configured_gas_price().await?
+        };
+        *self.gas_price.lock().expect("gas price lock") = Some((price, Instant::now()));
+        Ok(price)
+    }
+
+    async fn configured_gas_price(&self) -> anyhow::Result<f64> {
+        let config: Value = self.get("/cosmos/base/node/v1beta1/config", &[]).await?;
+        let price = config["minimum_gas_price"].as_str().unwrap_or_default();
+        let amount = price.strip_suffix(self.config.denom.as_str()).unwrap_or(price);
+        amount.parse().with_context(|| format!("the node publishes no usable minimum gas price ({price:?})"))
+    }
+
+    /// What a send costs right now: the gas the chain uses when simulating it, times the
+    /// configured adjustment, priced at the chain's gas price.
+    pub async fn estimate_send(&self, wallet: &Wallet, to: &str, amount: u64, memo: &str) -> anyhow::Result<TxFee> {
+        // Simulation does not check the fee, but paying one costs gas, so the draft pays a token
+        // fee for its gas use to include the fee transfer.
+        let draft = self.sign_send(wallet, to, amount, memo, TxFee { gas: 1_000_000, amount: 1 }).await?;
+        let gas = (self.simulate(&draft.bytes).await? as f64 * self.config.gas_adjustment).ceil() as u64;
+        let amount = (gas as f64 * self.gas_price(wallet).await?).ceil() as u64;
+        Ok(TxFee { gas, amount })
+    }
+
+    /// Signs a bank send of `amount` base units with `memo`, paying `fee`.
+    pub async fn sign_send(
+        &self,
+        wallet: &Wallet,
+        to: &str,
+        amount: u64,
+        memo: &str,
+        fee: TxFee,
+    ) -> anyhow::Result<SignedTx> {
         let from = wallet.address().to_string();
         let account =
             self.account(&from).await?.with_context(|| format!("{from} does not exist on chain yet, fund it first"))?;
@@ -113,14 +179,20 @@ impl Chain {
             amount: vec![Coin { denom: denom.clone(), amount: amount.into() }],
         };
         let body = Body::new(vec![message.to_any().map_err(cosmrs_error)?], memo, 0u32);
-        let recipient_exists = self.account(to).await?.is_some();
-        let gas = self.config.gas_for_send(account.sequence, recipient_exists);
-        let fee = Fee::from_amount_and_gas(Coin { denom, amount: self.config.fee_for_gas(gas).into() }, gas);
+        let fee = Fee::from_amount_and_gas(Coin { denom, amount: fee.amount.into() }, fee.gas);
         let auth_info = SignerInfo::single_direct(Some(wallet.key().public_key()), account.sequence).auth_info(fee);
         let chain_id = self.config.chain_id.parse().map_err(|e| anyhow::anyhow!("chain id: {e}"))?;
         let sign_doc = SignDoc::new(&body, &auth_info, &chain_id, account.account_number).map_err(cosmrs_error)?;
         let bytes = sign_doc.sign(wallet.key()).and_then(|raw| raw.to_bytes()).map_err(cosmrs_error)?;
         Ok(SignedTx { hash: tx_hash(&bytes), bytes, sequence: account.sequence })
+    }
+
+    /// The gas the chain uses executing these transaction bytes, without committing them.
+    pub async fn simulate(&self, tx_bytes: &[u8]) -> anyhow::Result<u64> {
+        let body = serde_json::json!({ "tx_bytes": base64::engine::general_purpose::STANDARD.encode(tx_bytes) });
+        let url = format!("{}/cosmos/tx/v1beta1/simulate", self.config.rest);
+        let simulated: Value = parse(self.http.post(&url).json(&body).send().await?).await?;
+        number(&simulated["gas_info"]["gas_used"])
     }
 
     /// Submits signed transaction bytes and returns the hash once the node accepted them
@@ -253,6 +325,9 @@ impl TxResponse {
         let height = self.height.parse()?;
         let time = timestamp(&self.timestamp.clone().into())?;
         let messages = body["messages"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let fees = self.tx["auth_info"]["fee"]["amount"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let fee =
+            fees.iter().find(|coin| coin["denom"] == denom).map_or(0, |coin| number(&coin["amount"]).unwrap_or(0));
         let sends = messages.iter().enumerate().filter_map(|(index, message)| {
             if message["@type"] != "/cosmos.bank.v1beta1.MsgSend" {
                 return None;
@@ -267,6 +342,7 @@ impl TxResponse {
                 recipient: message["to_address"].as_str().unwrap_or_default().to_string(),
                 amount: number(&amount["amount"]).unwrap_or(0),
                 memo: memo.to_string(),
+                fee,
             })
         });
         Ok(sends.collect())
@@ -296,6 +372,24 @@ fn timestamp(value: &Value) -> anyhow::Result<i64> {
     Ok(chrono::DateTime::parse_from_rfc3339(text).with_context(|| format!("bad timestamp {text}"))?.timestamp())
 }
 
+/// The price in "... (min gas price: 0.004 utia/gas) ..." from a node's insufficient-fee error.
+fn minimum_from_rejection(error: &str) -> anyhow::Result<f64> {
+    let after = error.split("min gas price:").nth(1).with_context(|| format!("no gas price in: {error}"))?;
+    let number: String = after.trim_start().chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    number.parse().with_context(|| format!("unreadable gas price in: {error}"))
+}
+
 fn tx_hash(tx_bytes: &[u8]) -> String {
     hex::encode_upper(Sha256::digest(tx_bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reads_the_minimum_from_a_rejection() {
+        let error = "transaction rejected (code 13): insufficient minimum gas price for this node; got: 0utia, \
+                     required: 320utia (min gas price: 0.004 utia/gas): insufficient fee";
+        assert_eq!(super::minimum_from_rejection(error).unwrap(), 0.004);
+        assert!(super::minimum_from_rejection("rejected: out of gas").is_err());
+    }
 }

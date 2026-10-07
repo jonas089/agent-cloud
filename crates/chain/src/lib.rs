@@ -4,7 +4,7 @@
 mod client;
 mod wallet;
 
-pub use client::{Chain, Head, IncludedTx, SignedTx, Transfer};
+pub use client::{Chain, Head, IncludedTx, SignedTx, Transfer, TxFee};
 pub use wallet::Wallet;
 
 /// cosmrs reports errors as `eyre` reports, which do not convert into `anyhow` on their own.

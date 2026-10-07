@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use anyhow::{ensure, Context};
+use anyhow::Context;
 use protocol::api::ChainConfig;
 use serde::Deserialize;
 
@@ -15,8 +15,8 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// The built web app (`web/dist`), served for every path outside `/api`.
     pub web_dir: PathBuf,
-    /// Added to every first payment to cover the escrow's forward or refund. Must cover the
-    /// costliest send.
+    /// Added to every first payment: the escrow's charge for forwarding it to the provider or
+    /// refunding it, which also pays that transfer's gas.
     pub escrow_fee_utia: u64,
     /// How often the ledger looks for new payments.
     pub poll_seconds: u64,
@@ -52,9 +52,6 @@ impl Config {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
             Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
         };
-        // The escrow's costliest send: its very first, to an account that never held funds.
-        let worst_send = config.chain.fee_for_gas(config.chain.gas_for_send(0, false));
-        ensure!(config.escrow_fee_utia >= worst_send, "escrow_fee_utia must cover one send ({worst_send} utia)");
         Ok(config)
     }
 

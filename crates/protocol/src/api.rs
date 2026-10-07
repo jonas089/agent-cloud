@@ -16,40 +16,10 @@ pub struct ChainConfig {
     pub rpc: String,
     pub denom: String,
     pub bech32_prefix: String,
-    /// Fee per unit of gas, in `denom`.
-    pub gas_price: f64,
-    /// Gas limit of a bank send between existing accounts. Fees are charged on the limit, not
-    /// on what is used, so it is measured rather than padded: 68.5k used on Mocha.
-    pub send_gas: u64,
-    /// Extra gas when the recipient has never held funds (measured: 14k).
-    pub new_recipient_gas: u64,
-    /// Extra gas on a sender's first transaction, which stores its public key (measured: 27k).
-    pub first_send_gas: u64,
+    /// Simulated gas is multiplied by this before signing, as headroom for what simulation
+    /// cannot see. Gas price and gas always come from the chain itself.
+    pub gas_adjustment: f64,
     pub explorer: String,
-}
-
-impl ChainConfig {
-    /// The gas limit of one bank send. Deterministic for the same sender sequence and
-    /// recipient, so signing the same payment twice yields the same transaction.
-    pub fn gas_for_send(&self, sender_sequence: u64, recipient_exists: bool) -> u64 {
-        let mut gas = self.send_gas;
-        if !recipient_exists {
-            gas += self.new_recipient_gas;
-        }
-        if sender_sequence == 0 {
-            gas += self.first_send_gas;
-        }
-        gas
-    }
-
-    pub fn fee_for_gas(&self, gas: u64) -> u64 {
-        (gas as f64 * self.gas_price).ceil() as u64
-    }
-
-    /// The fee of a typical bank send, for estimates.
-    pub fn send_fee(&self) -> u64 {
-        self.fee_for_gas(self.send_gas)
-    }
 }
 
 impl Default for ChainConfig {
@@ -61,10 +31,7 @@ impl Default for ChainConfig {
             rpc: "https://rpc.celestia-mocha.com".into(),
             denom: "utia".into(),
             bech32_prefix: "celestia".into(),
-            gas_price: 0.004,
-            send_gas: 75_000,
-            new_recipient_gas: 20_000,
-            first_send_gas: 30_000,
+            gas_adjustment: 1.1,
             explorer: "https://mocha.celenium.io".into(),
         }
     }
@@ -79,6 +46,11 @@ pub struct MarketConfig {
     /// Added to every first payment. It pays the escrow's gas for forwarding the payment to
     /// the provider, or for refunding it when the offer was taken first.
     pub escrow_fee_utia: u64,
+    /// The chain's minimum gas price right now, in `denom` per unit of gas.
+    pub gas_price: f64,
+    /// The average fee of recent agentcloud transfers on chain, for estimates. `None` until
+    /// the market has seen one.
+    pub typical_fee_utia: Option<u64>,
     /// Where the source lives, for the setup instructions in the web app.
     pub repository: String,
 }
@@ -246,6 +218,8 @@ pub struct Payment {
     pub lease_id: Option<String>,
     /// What the market did with it, in a few words.
     pub outcome: String,
+    /// What the sender paid in gas for the transaction.
+    pub fee_utia: u64,
 }
 
 /// The wallet a lease's agent pays its rent from.
@@ -296,6 +270,12 @@ pub struct Broadcast {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Broadcasted {
     pub tx_hash: String,
+}
+
+/// Response to `POST /api/chain/simulate`, which takes a [`Broadcast`] body.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Simulated {
+    pub gas_used: u64,
 }
 
 /// Body of every non-2xx response.

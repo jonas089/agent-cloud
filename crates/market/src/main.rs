@@ -30,6 +30,8 @@ pub struct Market {
     pub config: Config,
     pub store: Store,
     pub chain: Chain,
+    /// The market-controlled account that holds first payments in flight.
+    pub escrow: Wallet,
     pub escrow_address: String,
     /// The newest block the ledger has fully read. Leases are judged against its time.
     pub synced: RwLock<Option<Head>>,
@@ -53,12 +55,13 @@ async fn main() -> anyhow::Result<()> {
     let market = Arc::new(Market {
         store: Store::open(&config.database_path())?,
         chain: Chain::new(config.chain.clone()),
+        escrow,
         escrow_address,
         synced: RwLock::new(None),
         config,
     });
     tokio::spawn(ledger::run(market.clone()));
-    tokio::spawn(escrow::run(market.clone(), escrow));
+    tokio::spawn(escrow::run(market.clone()));
 
     let listener = tokio::net::TcpListener::bind(market.config.listen)
         .await

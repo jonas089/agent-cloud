@@ -2,7 +2,7 @@
 // its rent from. Cancelling is a transfer signed by the renter, so it needs Keplr too.
 
 import { useState } from "react";
-import { expiresAt, market, paidUntil, sendFee, sshCommand, sshConfig } from "../api";
+import { expiresAt, market, paidUntil, sshCommand, sshConfig } from "../api";
 import type { Account, Lease } from "../api";
 import type { Session } from "../App";
 import { duration, tia, tiaPrice, toUtia, when } from "../format";
@@ -110,7 +110,7 @@ function LeaseCard({ lease, name, account, session, onSent }: LeaseCardProps) {
   const until = paidUntil(lease);
   const expires = expiresAt(lease);
   const wallet = account.agent_wallets.find((w) => w.lease_id === lease.id);
-  const perHour = lease.price_utia_per_hour + sendFee(session.config.chain);
+  const perHour = lease.price_utia_per_hour + (session.config.typical_fee_utia ?? 0);
 
   const cancel = async () => {
     if (!window.confirm("End this lease now? The sandbox and everything in it are deleted.")) return;

@@ -7,10 +7,8 @@ export interface ChainConfig {
   rpc: string;
   denom: string;
   bech32_prefix: string;
-  gas_price: number;
-  send_gas: number;
-  new_recipient_gas: number;
-  first_send_gas: number;
+  /** Simulated gas is multiplied by this before signing. */
+  gas_adjustment: number;
   explorer: string;
 }
 
@@ -18,6 +16,10 @@ export interface MarketConfig {
   chain: ChainConfig;
   escrow_address: string;
   escrow_fee_utia: number;
+  /** The chain's minimum gas price right now. */
+  gas_price: number;
+  /** The average fee of recent agentcloud transfers, or null before the first one. */
+  typical_fee_utia: number | null;
   /** Where the source lives, for the setup instructions. Empty when not configured. */
   repository: string;
 }
@@ -93,6 +95,7 @@ export interface Payment {
   memo: string;
   lease_id: string | null;
   outcome: string;
+  fee_utia: number;
 }
 
 export interface Account {
@@ -120,6 +123,7 @@ export const market = {
     request<{ lease: Lease; payment: PaymentRequest }>("POST", "/api/leases", { offer_id, renter, ssh_key }),
   chainAccount: (address: string) => request<ChainAccount>("GET", `/api/chain/accounts/${address}`),
   broadcast: (tx_bytes: string) => request<{ tx_hash: string }>("POST", "/api/chain/broadcast", { tx_bytes }),
+  simulate: (tx_bytes: string) => request<{ gas_used: number }>("POST", "/api/chain/simulate", { tx_bytes }),
 };
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -136,16 +140,6 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 // ---------------------------------------------------------------- shared rules
 // The same rules as `crates/protocol`.
-
-/** The gas limit of one bank send, as `ChainConfig::gas_for_send` computes it. */
-export function gasForSend(chain: ChainConfig, senderSequence: number, recipientExists: boolean): number {
-  return chain.send_gas + (recipientExists ? 0 : chain.new_recipient_gas) + (senderSequence === 0 ? chain.first_send_gas : 0);
-}
-
-/** The fee of a typical bank send, for estimates. */
-export function sendFee(chain: ChainConfig): number {
-  return Math.ceil(chain.send_gas * chain.gas_price);
-}
 
 /** The command that logs in to a sandbox, mirroring `Connection::ssh_command`. */
 export function sshCommand(c: Connection, identity?: string): string {

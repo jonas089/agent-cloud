@@ -2,7 +2,6 @@
 // offers, and in plain words why nobody else can read your API keys.
 
 import type { Session } from "../App";
-import { sendFee } from "../api";
 import { tia } from "../format";
 import { CodeBlock } from "../ui";
 
@@ -208,7 +207,8 @@ export function GuideView({ session }: { session: Session }) {
           <h2>Paying</h2>
           <p>
             Rent is prepaid by the hour from the agent's wallet, a few minutes before the hour runs out, plus{" "}
-            {tia(sendFee(config.chain))} gas per transfer. The first hour comes from Keplr with a{" "}
+            {config.typical_fee_utia ? `about ${tia(config.typical_fee_utia)}` : "a fraction of a cent of"} gas per
+            transfer, priced by the chain at the time. The first hour comes from Keplr with a{" "}
             {tia(config.escrow_fee_utia)} escrow fee. If the wallet runs dry, the sandbox survives the grace period shown on
             the offer, then it is deleted with everything in it. Cancel any time on Manage agents: the sandbox is wiped and
             the wallet's balance comes back to you.

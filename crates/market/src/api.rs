@@ -16,7 +16,7 @@ use base64::Engine;
 use protocol::agent_auth::{SignedRequest, KEY_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
 use protocol::api::{
     ssh_key_commitment, Account, AgentWallet, ApiError, Broadcast, Broadcasted, ChainAccount, Lease, LeaseCreated,
-    LeaseStatus, MarketConfig, NewLease, Offer, OfferSpec, PaymentRequest, SandboxReport, Status,
+    LeaseStatus, MarketConfig, NewLease, Offer, OfferSpec, PaymentRequest, SandboxReport, Simulated, Status,
 };
 use protocol::memo::Memo;
 use protocol::unix_now;
@@ -44,6 +44,7 @@ pub fn router(market: Arc<Market>) -> Router {
         .route("/accounts/{address}", get(account))
         .route("/chain/accounts/{address}", get(chain_account))
         .route("/chain/broadcast", post(broadcast))
+        .route("/chain/simulate", post(simulate))
         .route("/agent/offer", put(agent_offer))
         .route("/agent/leases", get(agent_leases))
         .route("/agent/leases/{id}/sandbox", put(agent_sandbox))
@@ -53,13 +54,15 @@ pub fn router(market: Arc<Market>) -> Router {
 
 // -------------------------------------------------------------------- public
 
-async fn config(State(market): State<Arc<Market>>) -> Json<MarketConfig> {
-    Json(MarketConfig {
+async fn config(State(market): State<Arc<Market>>) -> Result<Json<MarketConfig>, Failure> {
+    Ok(Json(MarketConfig {
         chain: market.config.chain.clone(),
         escrow_address: market.escrow_address.clone(),
         escrow_fee_utia: market.config.escrow_fee_utia,
+        gas_price: market.chain.gas_price(&market.escrow).await.map_err(Failure::Chain)?,
+        typical_fee_utia: market.store.read(|db| db.typical_fee())?,
         repository: market.config.repository.clone(),
-    })
+    }))
 }
 
 async fn status(State(market): State<Arc<Market>>) -> Result<Json<Status>, Failure> {
@@ -155,7 +158,9 @@ async fn account(State(market): State<Arc<Market>>, Path(address): Path<String>)
     }
     let active = leases.iter().filter(|lease| lease.status == LeaseStatus::Active);
     let rent_utia_per_hour = active.clone().map(|lease| lease.price_utia_per_hour).sum();
-    let gas_utia_per_hour = active.count() as u64 * market.config.chain.send_fee();
+    // One rent transfer per lease and hour, at what transfers have recently cost.
+    let typical_fee = market.store.read(|db| db.typical_fee())?.unwrap_or(0);
+    let gas_utia_per_hour = active.count() as u64 * typical_fee;
     Ok(Json(Account { address, balance_utia, leases, agent_wallets, payments, rent_utia_per_hour, gas_utia_per_hour }))
 }
 
@@ -176,6 +181,18 @@ async fn broadcast(
         .map_err(|_| Failure::BadRequest("tx_bytes is not base64".into()))?;
     let tx_hash = market.chain.broadcast(&bytes).await.map_err(Failure::Chain)?;
     Ok(Json(Broadcasted { tx_hash }))
+}
+
+/// Gas estimation for wallets in the browser, which cannot reach the public nodes.
+async fn simulate(
+    State(market): State<Arc<Market>>,
+    Json(request): Json<Broadcast>,
+) -> Result<Json<Simulated>, Failure> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&request.tx_bytes)
+        .map_err(|_| Failure::BadRequest("tx_bytes is not base64".into()))?;
+    let gas_used = market.chain.simulate(&bytes).await.map_err(Failure::Chain)?;
+    Ok(Json(Simulated { gas_used }))
 }
 
 // -------------------------------------------------------------------- provider agents

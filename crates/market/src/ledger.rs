@@ -103,6 +103,7 @@ fn apply(market: &Market, db: &Db, transfer: &Transfer) -> anyhow::Result<()> {
         memo: transfer.memo.clone(),
         lease_id: memo.map(|memo| memo.lease_id().to_string()),
         outcome,
+        fee_utia: transfer.fee,
     };
     db.insert_payment(&payment, transfer.msg_index)
 }

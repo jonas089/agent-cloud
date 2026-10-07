@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use chain::Chain;
+use chain::{Chain, TxFee};
 use protocol::api::Lease;
 use protocol::memo::Memo;
 use protocol::unix_now;
@@ -57,15 +57,18 @@ impl Rent {
             }
             let (wallet, _) = wallets.for_lease(lease)?;
             let balance = self.chain.balance(wallet.wallet.address().as_ref()).await?;
-            // A first send from a fresh wallet costs extra gas; leave room for it.
-            let fee = self.chain.config().fee_for_gas(self.chain.config().gas_for_send(0, true));
-            if balance < amount + fee {
+            let memo = Memo::Pay(lease.id.clone()).to_string();
+            let fee = if balance >= amount {
+                Some(self.chain.estimate_send(&wallet.wallet, &lease.payout_address, amount, &memo).await?)
+            } else {
+                None
+            };
+            let Some(fee) = fee.filter(|fee| balance >= amount + fee.amount) else {
                 tracing::debug!(lease = %lease.id, balance, amount, "agent wallet cannot cover its rent");
                 continue;
-            }
-            let memo = Memo::Pay(lease.id.clone()).to_string();
-            self.send(&wallet, &lease.payout_address, amount, &memo).await?;
-            tracing::info!(lease = %lease.id, amount, "rent sent");
+            };
+            self.send(&wallet, &lease.payout_address, amount, &memo, fee).await?;
+            tracing::info!(lease = %lease.id, amount, fee = fee.amount, "rent sent");
         }
         Ok(())
     }
@@ -73,26 +76,40 @@ impl Rent {
     /// Returns the balance of every wallet whose lease is over to its renter, then forgets the
     /// wallet once nothing worth sending is left.
     pub async fn refund_ended(&mut self, active: &[Lease], wallets: &LeaseWallets) -> anyhow::Result<()> {
-        let fee = self.chain.config().send_fee();
         for wallet in wallets.all()? {
             if active.iter().any(|lease| lease.id == wallet.lease_id) || self.in_flight.contains_key(&wallet.lease_id) {
                 continue;
             }
             let balance = self.chain.balance(wallet.wallet.address().as_ref()).await?;
-            if balance <= fee || wallet.renter.is_empty() {
+            let memo = Memo::Refund(wallet.lease_id.clone()).to_string();
+            // Estimated for a token amount: the fee hardly depends on the amount, and simulating
+            // a send of everything would fail for want of the fee.
+            let fee = if balance > 0 && !wallet.renter.is_empty() {
+                Some(self.chain.estimate_send(&wallet.wallet, &wallet.renter, 1, &memo).await?)
+            } else {
+                None
+            };
+            let Some(fee) = fee.filter(|fee| balance > fee.amount) else {
                 wallets.remove(&wallet.lease_id)?;
                 tracing::info!(lease = %wallet.lease_id, "agent wallet emptied and removed");
                 continue;
-            }
-            let memo = Memo::Refund(wallet.lease_id.clone()).to_string();
-            self.send(&wallet, &wallet.renter, balance - fee, &memo).await?;
-            tracing::info!(lease = %wallet.lease_id, amount = balance - fee, "leftover funds returned to the renter");
+            };
+            let amount = balance - fee.amount;
+            self.send(&wallet, &wallet.renter, amount, &memo, fee).await?;
+            tracing::info!(lease = %wallet.lease_id, amount, "leftover funds returned to the renter");
         }
         Ok(())
     }
 
-    async fn send(&mut self, wallet: &LeaseWallet, to: &str, amount: u64, memo: &str) -> anyhow::Result<()> {
-        let signed = self.chain.sign_send(&wallet.wallet, to, amount, memo).await?;
+    async fn send(
+        &mut self,
+        wallet: &LeaseWallet,
+        to: &str,
+        amount: u64,
+        memo: &str,
+        fee: TxFee,
+    ) -> anyhow::Result<()> {
+        let signed = self.chain.sign_send(&wallet.wallet, to, amount, memo, fee).await?;
         self.chain.broadcast(&signed.bytes).await?;
         let in_flight = InFlight {
             hash: signed.hash,

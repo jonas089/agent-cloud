@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS payments (
     memo        TEXT NOT NULL,
     lease_id    TEXT,
     outcome     TEXT NOT NULL,
+    fee_utia    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (tx_hash, msg_index)
 );
 CREATE INDEX IF NOT EXISTS payments_by_lease ON payments (lease_id);
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS payouts (
     status      TEXT NOT NULL,
     tx_hash     TEXT,
     sequence    INTEGER,
+    tx_bytes    BLOB,
     error       TEXT
 );
 CREATE TABLE IF NOT EXISTS cursors (
@@ -74,6 +76,7 @@ impl Store {
         let connection = rusqlite::Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.execute_batch(SCHEMA)?;
+        add_missing_columns(&connection)?;
         Ok(Self(Mutex::new(connection)))
     }
 
@@ -109,6 +112,8 @@ pub struct Payout {
     /// Set once signed; the transaction may or may not have landed.
     pub tx_hash: Option<String>,
     pub sequence: Option<u64>,
+    /// The signed transaction, rebroadcast as is until it lands or provably cannot.
+    pub tx_bytes: Option<Vec<u8>>,
 }
 
 const LEASE_COLUMNS: &str = "id, offer_id, renter, ssh_key, status, end_reason, created_at, started_at, ended_at, \
@@ -234,7 +239,7 @@ impl Db<'_> {
 
     pub fn insert_payment(&self, payment: &Payment, msg_index: u32) -> anyhow::Result<()> {
         self.0.execute(
-            "INSERT INTO payments (tx_hash, msg_index, height, time, sender, recipient, amount_utia, memo, lease_id, outcome)
+            "INSERT INTO payments (tx_hash, msg_index, height, time, sender, recipient, amount_utia, memo, lease_id, outcome, fee_utia)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 payment.tx_hash,
@@ -247,6 +252,7 @@ impl Db<'_> {
                 payment.memo,
                 payment.lease_id,
                 payment.outcome,
+                payment.fee_utia as i64,
             ],
         )?;
         Ok(())
@@ -255,7 +261,7 @@ impl Db<'_> {
     /// Payments for the renter's leases or sent by the renter, newest first.
     pub fn payments_of_renter(&self, renter: &str, limit: u32) -> anyhow::Result<Vec<Payment>> {
         let mut statement = self.0.prepare(
-            "SELECT tx_hash, height, time, sender, recipient, amount_utia, memo, lease_id, outcome FROM payments
+            "SELECT tx_hash, height, time, sender, recipient, amount_utia, memo, lease_id, outcome, fee_utia FROM payments
              WHERE sender = ?1 OR lease_id IN (SELECT id FROM leases WHERE renter = ?1)
              ORDER BY height DESC, msg_index DESC LIMIT ?2",
         )?;
@@ -270,9 +276,21 @@ impl Db<'_> {
                 memo: row.get(6)?,
                 lease_id: row.get(7)?,
                 outcome: row.get(8)?,
+                fee_utia: row.get::<_, i64>(9)? as u64,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The average fee of the latest agentcloud transfers, a live estimate of what one costs.
+    pub fn typical_fee(&self) -> anyhow::Result<Option<u64>> {
+        let average: Option<f64> = self.0.query_row(
+            "SELECT AVG(fee_utia) FROM (SELECT fee_utia FROM payments
+             WHERE fee_utia > 0 AND memo LIKE 'agentcloud:%' ORDER BY height DESC LIMIT 50)",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(average.map(|fee| fee.round() as u64))
     }
 
     // ---------------------------------------------------------------- escrow payouts
@@ -291,7 +309,7 @@ impl Db<'_> {
         let payout = self
             .0
             .query_row(
-                "SELECT id, recipient, amount_utia, memo, tx_hash, sequence FROM payouts
+                "SELECT id, recipient, amount_utia, memo, tx_hash, sequence, tx_bytes FROM payouts
                  WHERE status IN ('queued', 'sent') ORDER BY id LIMIT 1",
                 [],
                 |row| {
@@ -302,6 +320,7 @@ impl Db<'_> {
                         memo: row.get(3)?,
                         tx_hash: row.get(4)?,
                         sequence: row.get::<_, Option<i64>>(5)?.map(|s| s as u64),
+                        tx_bytes: row.get(6)?,
                     })
                 },
             )
@@ -310,10 +329,10 @@ impl Db<'_> {
     }
 
     /// Recorded before broadcasting, so a crash can never lose track of a signed payout.
-    pub fn payout_signed(&self, id: i64, tx_hash: &str, sequence: u64) -> anyhow::Result<()> {
+    pub fn payout_signed(&self, id: i64, tx_hash: &str, sequence: u64, tx_bytes: &[u8]) -> anyhow::Result<()> {
         self.0.execute(
-            "UPDATE payouts SET status = 'sent', tx_hash = ?2, sequence = ?3 WHERE id = ?1",
-            params![id, tx_hash, sequence as i64],
+            "UPDATE payouts SET status = 'sent', tx_hash = ?2, sequence = ?3, tx_bytes = ?4 WHERE id = ?1",
+            params![id, tx_hash, sequence as i64, tx_bytes],
         )?;
         Ok(())
     }
@@ -326,7 +345,10 @@ impl Db<'_> {
 
     /// Back to the queue, for a payout whose sequence was used by something else.
     pub fn payout_requeued(&self, id: i64) -> anyhow::Result<()> {
-        self.0.execute("UPDATE payouts SET status = 'queued', tx_hash = NULL, sequence = NULL WHERE id = ?1", [id])?;
+        self.0.execute(
+            "UPDATE payouts SET status = 'queued', tx_hash = NULL, sequence = NULL, tx_bytes = NULL WHERE id = ?1",
+            [id],
+        )?;
         Ok(())
     }
 
@@ -348,6 +370,23 @@ impl Db<'_> {
         )?;
         Ok(())
     }
+}
+
+/// Columns added after a database was first created. SQLite has no `ADD COLUMN IF NOT EXISTS`.
+fn add_missing_columns(connection: &rusqlite::Connection) -> anyhow::Result<()> {
+    const ADDED: [(&str, &str, &str); 2] =
+        [("payments", "fee_utia", "INTEGER NOT NULL DEFAULT 0"), ("payouts", "tx_bytes", "BLOB")];
+    for (table, column, kind) in ADDED {
+        let exists: bool = connection.query_row(
+            &format!("SELECT COUNT(*) > 0 FROM pragma_table_info('{table}') WHERE name = ?1"),
+            [column],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            connection.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn offer_from_row(row: &Row) -> rusqlite::Result<anyhow::Result<StoredOffer>> {

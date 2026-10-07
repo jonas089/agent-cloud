@@ -6,7 +6,7 @@ import { MsgSend } from "cosmjs-types/cosmos/bank/v1beta1/tx";
 import { PubKey } from "cosmjs-types/cosmos/crypto/secp256k1/keys";
 import { SignMode } from "cosmjs-types/cosmos/tx/signing/v1beta1/signing";
 import { AuthInfo, SignDoc, TxBody, TxRaw } from "cosmjs-types/cosmos/tx/v1beta1/tx";
-import { gasForSend, market } from "./api";
+import { market } from "./api";
 import type { ChainConfig } from "./api";
 
 declare global {
@@ -15,6 +15,7 @@ declare global {
       enable(chainId: string): Promise<void>;
       experimentalSuggestChain(info: unknown): Promise<void>;
       getOfflineSigner(chainId: string): DirectSigner;
+      defaultOptions?: { sign?: { preferNoSetFee?: boolean } };
     };
   }
 }
@@ -57,45 +58,56 @@ export function disconnect(): void {
   remember(false);
 }
 
-/** Signs a TIA transfer in Keplr and broadcasts it. Resolves with the transaction hash. */
+/**
+ * Signs a TIA transfer in Keplr and broadcasts it. Resolves with the transaction hash. The gas
+ * comes from simulating the transfer on chain and the price from the chain's current minimum.
+ */
 export async function sendTia(chain: ChainConfig, from: string, to: string, amountUtia: number, memo: string): Promise<string> {
   if (!window.keplr) throw new Error("Keplr is not installed");
+  // Sign the fee computed from the chain instead of Keplr's own default gas prices.
+  window.keplr.defaultOptions = { sign: { preferNoSetFee: true } };
   const signer = window.keplr.getOfflineSigner(chain.chain_id);
   const account = (await signer.getAccounts()).find((a) => a.address === from);
   if (!account) throw new Error("Keplr is connected to another account; reconnect it");
   const { account_number, sequence } = await market.chainAccount(from);
-  const recipientExists = await market.chainAccount(to).then(() => true, () => false);
-  const gas = gasForSend(chain, sequence, recipientExists);
 
   const send = MsgSend.fromPartial({ fromAddress: from, toAddress: to, amount: [{ denom: chain.denom, amount: String(amountUtia) }] });
   const bodyBytes = TxBody.encode(
     TxBody.fromPartial({ messages: [{ typeUrl: "/cosmos.bank.v1beta1.MsgSend", value: MsgSend.encode(send).finish() }], memo }),
   ).finish();
-  const authInfoBytes = AuthInfo.encode(
-    AuthInfo.fromPartial({
-      signerInfos: [
-        {
-          publicKey: { typeUrl: "/cosmos.crypto.secp256k1.PubKey", value: PubKey.encode({ key: account.pubkey }).finish() },
-          modeInfo: { single: { mode: SignMode.SIGN_MODE_DIRECT } },
-          sequence: BigInt(sequence),
-        },
-      ],
-      fee: {
-        amount: [{ denom: chain.denom, amount: String(Math.ceil(gas * chain.gas_price)) }],
-        gasLimit: BigInt(gas),
-      },
-    }),
-  ).finish();
+  const authInfo = (gas: number, fee: number) =>
+    AuthInfo.encode(
+      AuthInfo.fromPartial({
+        signerInfos: [
+          {
+            publicKey: { typeUrl: "/cosmos.crypto.secp256k1.PubKey", value: PubKey.encode({ key: account.pubkey }).finish() },
+            modeInfo: { single: { mode: SignMode.SIGN_MODE_DIRECT } },
+            sequence: BigInt(sequence),
+          },
+        ],
+        fee: { amount: [{ denom: chain.denom, amount: String(fee) }], gasLimit: BigInt(gas) },
+      }),
+    ).finish();
+
+  // Simulation checks no signature and charges no fee, so a placeholder of each works.
+  const draft = TxRaw.fromPartial({ bodyBytes, authInfoBytes: authInfo(1_000_000, 0), signatures: [new Uint8Array()] });
+  const [{ gas_used }, { gas_price }] = await Promise.all([market.simulate(toBase64(TxRaw.encode(draft).finish())), market.config()]);
+  const gas = Math.ceil(gas_used * chain.gas_adjustment);
+  const authInfoBytes = authInfo(gas, Math.ceil(gas * gas_price));
+
   const doc = SignDoc.fromPartial({ bodyBytes, authInfoBytes, chainId: chain.chain_id, accountNumber: BigInt(account_number) });
   const { signed, signature } = await signer.signDirect(from, doc);
-
   const raw = TxRaw.fromPartial({
     bodyBytes: signed.bodyBytes,
     authInfoBytes: signed.authInfoBytes,
     signatures: [Uint8Array.from(atob(signature.signature), (c) => c.charCodeAt(0))],
   });
-  const { tx_hash } = await market.broadcast(btoa(String.fromCharCode(...TxRaw.encode(raw).finish())));
+  const { tx_hash } = await market.broadcast(toBase64(TxRaw.encode(raw).finish()));
   return tx_hash;
+}
+
+function toBase64(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes));
 }
 
 async function firstAddress(chain: ChainConfig): Promise<string> {
@@ -122,7 +134,7 @@ function chainInfo(chain: ChainConfig) {
       bech32PrefixConsPub: `${prefix}valconspub`,
     },
     currencies: [currency],
-    feeCurrencies: [{ ...currency, gasPriceStep: { low: chain.gas_price, average: chain.gas_price, high: chain.gas_price * 2 } }],
+    feeCurrencies: [currency],
     stakeCurrency: currency,
   };
 }
