@@ -272,6 +272,15 @@ pub struct Broadcasted {
     pub tx_hash: String,
 }
 
+/// `GET /api/chain/txs/{hash}`: a transaction that made it into a block.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IncludedTx {
+    pub height: u64,
+    pub succeeded: bool,
+    /// Why it failed, when it did.
+    pub log: String,
+}
+
 /// Response to `POST /api/chain/simulate`, which takes a [`Broadcast`] body.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Simulated {

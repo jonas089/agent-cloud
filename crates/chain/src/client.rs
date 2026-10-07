@@ -71,10 +71,12 @@ pub struct Head {
     pub time: i64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct IncludedTx {
     pub height: u64,
     pub succeeded: bool,
+    /// Why it failed, when it did.
+    pub log: String,
 }
 
 impl Chain {
@@ -223,7 +225,11 @@ impl Chain {
         }
         let path = format!("/cosmos/tx/v1beta1/txs/{hash}");
         let Some(Response { tx_response }) = self.get_optional(&path, &[]).await? else { return Ok(None) };
-        Ok(Some(IncludedTx { height: tx_response.height.parse()?, succeeded: tx_response.code == 0 }))
+        Ok(Some(IncludedTx {
+            height: tx_response.height.parse()?,
+            succeeded: tx_response.code == 0,
+            log: tx_response.raw_log,
+        }))
     }
 
     /// Polls until the transaction is in a block or `timeout` passes.

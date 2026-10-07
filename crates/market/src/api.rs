@@ -15,8 +15,9 @@ use axum::{Json, Router};
 use base64::Engine;
 use protocol::agent_auth::{SignedRequest, KEY_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER};
 use protocol::api::{
-    ssh_key_commitment, Account, AgentWallet, ApiError, Broadcast, Broadcasted, ChainAccount, Lease, LeaseCreated,
-    LeaseStatus, MarketConfig, NewLease, Offer, OfferSpec, PaymentRequest, SandboxReport, Simulated, Status,
+    ssh_key_commitment, Account, AgentWallet, ApiError, Broadcast, Broadcasted, ChainAccount, IncludedTx, Lease,
+    LeaseCreated, LeaseStatus, MarketConfig, NewLease, Offer, OfferSpec, PaymentRequest, SandboxReport, Simulated,
+    Status,
 };
 use protocol::memo::Memo;
 use protocol::unix_now;
@@ -45,6 +46,7 @@ pub fn router(market: Arc<Market>) -> Router {
         .route("/chain/accounts/{address}", get(chain_account))
         .route("/chain/broadcast", post(broadcast))
         .route("/chain/simulate", post(simulate))
+        .route("/chain/txs/{hash}", get(chain_tx))
         .route("/agent/offer", put(agent_offer))
         .route("/agent/leases", get(agent_leases))
         .route("/agent/leases/{id}/sandbox", put(agent_sandbox))
@@ -181,6 +183,12 @@ async fn broadcast(
         .map_err(|_| Failure::BadRequest("tx_bytes is not base64".into()))?;
     let tx_hash = market.chain.broadcast(&bytes).await.map_err(Failure::Chain)?;
     Ok(Json(Broadcasted { tx_hash }))
+}
+
+async fn chain_tx(State(market): State<Arc<Market>>, Path(hash): Path<String>) -> Result<Json<IncludedTx>, Failure> {
+    let included =
+        market.chain.tx(&hash).await.map_err(Failure::Chain)?.ok_or(Failure::NotFound("not in a block yet"))?;
+    Ok(Json(IncludedTx { height: included.height, succeeded: included.succeeded, log: included.log }))
 }
 
 /// Gas estimation for wallets in the browser, which cannot reach the public nodes.

@@ -89,8 +89,9 @@ export async function sendTia(chain: ChainConfig, from: string, to: string, amou
       }),
     ).finish();
 
-  // Simulation checks no signature and charges no fee, so a placeholder of each works.
-  const draft = TxRaw.fromPartial({ bodyBytes, authInfoBytes: authInfo(1_000_000, 0), signatures: [new Uint8Array()] });
+  // Simulation checks neither, but paying a fee and the signature's bytes both cost gas, so the
+  // draft carries a token fee and a full-size placeholder signature.
+  const draft = TxRaw.fromPartial({ bodyBytes, authInfoBytes: authInfo(1_000_000, 1), signatures: [new Uint8Array(64)] });
   const [{ gas_used }, { gas_price }] = await Promise.all([market.simulate(toBase64(TxRaw.encode(draft).finish())), market.config()]);
   const gas = Math.ceil(gas_used * chain.gas_adjustment);
   const authInfoBytes = authInfo(gas, Math.ceil(gas * gas_price));
@@ -103,7 +104,20 @@ export async function sendTia(chain: ChainConfig, from: string, to: string, amou
     signatures: [Uint8Array.from(atob(signature.signature), (c) => c.charCodeAt(0))],
   });
   const { tx_hash } = await market.broadcast(toBase64(TxRaw.encode(raw).finish()));
+  await confirm(tx_hash);
   return tx_hash;
+}
+
+/** Waits until the transaction is in a block, and fails if it failed there. */
+async function confirm(hash: string): Promise<void> {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    const tx = await market.tx(hash).catch(() => null);
+    if (tx && !tx.succeeded) throw new Error(`The transaction failed on chain: ${tx.log}`);
+    if (tx) return;
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+  throw new Error(`The transaction ${hash} has not landed after 90 seconds. Check it on the explorer.`);
 }
 
 function toBase64(bytes: Uint8Array): string {

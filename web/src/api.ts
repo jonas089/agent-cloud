@@ -126,6 +126,7 @@ export const market = {
   chainAccount: (address: string) => request<ChainAccount>("GET", `/api/chain/accounts/${address}`),
   broadcast: (tx_bytes: string) => request<{ tx_hash: string }>("POST", "/api/chain/broadcast", { tx_bytes }),
   simulate: (tx_bytes: string) => request<{ gas_used: number }>("POST", "/api/chain/simulate", { tx_bytes }),
+  tx: (hash: string) => request<{ height: number; succeeded: boolean; log: string }>("GET", `/api/chain/txs/${hash}`),
 };
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
