@@ -315,15 +315,25 @@ impl Sandboxes {
         Ok(())
     }
 
-    /// Runs `script` as root in the host's own mount namespace, from a short-lived privileged
-    /// container, so mounts land on the host whatever its mount propagation (a TEE's data disk
-    /// does not propagate). Paths are as the Docker daemon sees them. The provider holds the
-    /// Docker socket, so this grants nothing it does not already have.
+    /// Runs `script` as root in the Docker daemon's mount namespace, from a short-lived
+    /// privileged container, so mounts land where the daemon (and so every sandbox) sees them,
+    /// whatever the host's mount propagation. Paths are as the daemon reports them. The
+    /// provider holds the Docker socket, so this grants nothing it does not already have.
     async fn as_host_root(&self, script: &str) -> anyhow::Result<String> {
-        let args = ["run", "--rm", "--privileged", "--user=0", "--pid=host", "--network=none", "--entrypoint"];
-        let nsenter = ["nsenter", &self.image, "-t", "1", "-m", "--", "sh", "-c", script];
-        docker(&args.iter().chain(nsenter.iter()).copied().collect::<Vec<_>>()).await
+        let enter = format!(
+            "for p in /proc/[0-9]*; do [ \"$(cat $p/comm 2>/dev/null)\" = dockerd ] && d=${{p#/proc/}} && break; done
+             [ -n \"$d\" ] || {{ echo 'dockerd not found' >&2; exit 1; }}
+             exec nsenter -t \"$d\" -m -- sh -c {}",
+            shell_quote(script)
+        );
+        let args = ["run", "--rm", "--privileged", "--user=0", "--pid=host", "--network=none", "--entrypoint", "sh"];
+        docker(&args.iter().copied().chain([self.image.as_str(), "-c", &enter]).collect::<Vec<_>>()).await
     }
+}
+
+/// `text` as one single-quoted shell word.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 fn container_name(lease_id: &str) -> String {
