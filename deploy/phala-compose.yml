@@ -1,0 +1,44 @@
+# What runs in the Phala CVM: the provider and nothing else. Phala measures this file into the
+# CVM's attestation, so both images are pinned by digest and the whole provider config lives
+# here. Rendered by deploy/phala.sh, which fills in the __PLACEHOLDERS__.
+services:
+  provider:
+    image: __PROVIDER_IMAGE__
+    restart: always
+    # Out of memory, the kernel kills sandboxes, never the provider.
+    oom_score_adj: -1000
+    volumes:
+      # Sandboxes are containers on the CVM's own Docker.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Agent key and wallets, on the CVM's encrypted disk.
+      - provider-data:/data
+    environment:
+      RUST_LOG: info
+      AGENTCLOUD_PROVIDER_TOML: |
+        market = "__MARKET__"
+        data_dir = "/data"
+
+        [offer]
+        name = "Confidential agent sandbox"
+        description = "Ubuntu sandbox in an Intel TDX enclave on Phala Cloud with Claude Code, Codex, Gemini CLI and the major AI SDKs preinstalled. Nobody but you can read it, the operator included. Your agent pays its own rent."
+        region = "Phala Cloud"
+        host = "${DSTACK_APP_ID}.${DSTACK_GATEWAY_DOMAIN}"
+        attestation_url = "https://trust.phala.com/app/${DSTACK_APP_ID}"
+        cpus = 1.0
+        memory_mb = 768
+        disk_gb = 3
+        price_utia_per_hour = 83333
+        grace_seconds = 900
+        slots = 10
+        payout_address = "__PAYOUT__"
+
+        [sandbox]
+        image = "__SANDBOX_IMAGE__"
+        first_port = 2200
+        last_port = 2209
+        connect_host = "${DSTACK_APP_ID}-{port}.${DSTACK_GATEWAY_DOMAIN}"
+        connect_port = 443
+        connect_tls = true
+
+volumes:
+  provider-data:

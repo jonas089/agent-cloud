@@ -1,0 +1,14 @@
+#!/bin/sh
+# The sandbox's entrypoint: installs the renter's key, the agent's wallet and the lease
+# description, prepares the git deploy target, starts the agent supervisor, then runs sshd.
+set -eu
+umask 077
+mkdir -p "$HOME/.ssh" "$HOME/.agentcloud"
+printf '%s\n' "$SSH_PUBLIC_KEY" > "$HOME/.ssh/authorized_keys"
+printf '%s\n' "$AGENT_WALLET_MNEMONIC" > "$HOME/.agentcloud/wallet.mnemonic"
+printf '%s\n' "$AGENT_LEASE_JSON" > "$HOME/.agentcloud/lease.json"
+[ -f "$HOME/.ssh/host_ed25519_key" ] || ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/host_ed25519_key"
+[ -f "$HOME/.profile" ] || printf '. /etc/profile.d/agentcloud.sh\n' > "$HOME/.profile"
+agent setup
+agent supervise &
+exec /usr/sbin/sshd -D -e -f /etc/ssh/agentcloud_sshd_config

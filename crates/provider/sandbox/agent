@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+# agent: run and manage the agent in this sandbox.
+#
+#   agent init <kind>             start from a template (see `agent init` for the list)
+#   agent secret set NAME [VALUE] store a secret in ~/.env (VALUE from stdin if omitted)
+#   agent secret ls | rm NAME     list secret names, or remove one
+#   agent logs [-f]               show the agent's output, or follow it
+#   agent status                  running or not, restarts, memory and disk use
+#   agent restart | stop | start  control the agent
+#   agent once                    run the agent's job once, in the foreground
+#   agent wallet                  the agent's wallet, its balance, and how long rent is paid
+#
+# The agent is ~/app/agent.sh. It starts when the sandbox does and is restarted whenever it
+# exits. Deploy your own with git: `git push <sandbox>:app.git main` runs ~/app/agent.sh.
+
+set -euo pipefail
+
+APP="$HOME/app"
+ENV_FILE="$HOME/.env"
+STATE="$HOME/.agentcloud"
+LOG="$HOME/agent.log"
+TEMPLATES=/usr/local/share/agentcloud/templates
+MAX_LOG_BYTES=$((20 * 1024 * 1024))
+
+die() { echo "agent: $*" >&2; exit 1; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# ----------------------------------------------------------------------------- templates
+
+# kind -> "provider|secret it needs" for the SDK agent in agent.py.
+sdk_kind() {
+  case "$1" in
+    claude) echo "anthropic|ANTHROPIC_API_KEY" ;;
+    openai) echo "openai|OPENAI_API_KEY" ;;
+    gemini) echo "gemini|GEMINI_API_KEY" ;;
+    grok) echo "xai|XAI_API_KEY" ;;
+    deepseek) echo "deepseek|DEEPSEEK_API_KEY" ;;
+    openrouter) echo "openrouter|OPENROUTER_API_KEY" ;;
+    mistral) echo "mistral|MISTRAL_API_KEY" ;;
+    *) return 1 ;;
+  esac
+}
+
+# The headless command each coding CLI runs per round, and the secret it needs.
+cli_kind() {
+  case "$1" in
+    claude-code) echo 'ANTHROPIC_API_KEY|claude -p "$PROMPT" --permission-mode bypassPermissions --output-format text' ;;
+    codex) echo 'OPENAI_API_KEY|printenv OPENAI_API_KEY | codex login --with-api-key >/dev/null 2>&1; codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$PROMPT"' ;;
+    gemini-cli) echo 'GEMINI_API_KEY|gemini -p "$PROMPT" -y' ;;
+    *) return 1 ;;
+  esac
+}
+
+cmd_init() {
+  local kind="${1:-}" spec secret
+  if [[ -z $kind ]]; then
+    cat <<'EOF'
+agent init <kind>
+
+  SDK agents (a small Python loop in ~/app/agent.py with a shell tool, light on memory):
+    claude      Anthropic Claude            needs ANTHROPIC_API_KEY
+    openai      OpenAI GPT                  needs OPENAI_API_KEY
+    gemini      Google Gemini               needs GEMINI_API_KEY
+    grok        xAI Grok                    needs XAI_API_KEY
+    deepseek    DeepSeek                    needs DEEPSEEK_API_KEY
+    openrouter  any model via OpenRouter    needs OPENROUTER_API_KEY
+    mistral     Mistral                     needs MISTRAL_API_KEY
+
+  Coding agents (the vendor's own CLI, run headless once per round):
+    claude-code Claude Code                 needs ANTHROPIC_API_KEY
+    codex       OpenAI Codex                needs OPENAI_API_KEY
+    gemini-cli  Gemini CLI (memory hungry)  needs GEMINI_API_KEY
+EOF
+    return
+  fi
+  [[ -e $APP/agent.sh ]] && die "~/app already has an agent. Move it away first: mv ~/app ~/app.old"
+  mkdir -p "$APP"
+  [[ -e $APP/TASK.md ]] || cp "$TEMPLATES/TASK.md" "$APP/TASK.md"
+  if spec="$(sdk_kind "$kind")"; then
+    secret="${spec#*|}"
+    cp "$TEMPLATES/agent.py" "$APP/agent.py"
+    printf '#!/bin/sh\nexport AGENT_PROVIDER=%s\nexec python3 agent.py\n' "${spec%%|*}" > "$APP/agent.sh"
+  elif spec="$(cli_kind "$kind")"; then
+    secret="${spec%%|*}"
+    cat > "$APP/agent.sh" <<EOF
+#!/bin/bash
+# Runs the $kind CLI headless on TASK.md every AGENT_INTERVAL seconds (default 600).
+while true; do
+  echo "--- run at \$(date -u '+%F %T') UTC"
+  PROMPT="\$(cat TASK.md)
+
+Keep notes for your next run in MEMORY.md, and read it first if it exists."
+  ${spec#*|} || echo "run failed"
+  sleep "\${AGENT_INTERVAL:-600}"
+done
+EOF
+  else
+    die "unknown kind '$kind'; run 'agent init' for the list"
+  fi
+  chmod +x "$APP/agent.sh"
+  echo "Created a $kind agent in ~/app. Next:"
+  grep -q "^$secret=" "$ENV_FILE" 2>/dev/null || echo "  agent secret set $secret      (paste the key, then Enter)"
+  echo "  edit ~/app/TASK.md                  (what the agent should do)"
+  echo "  agent logs -f                       (it starts on its own within seconds)"
+}
+
+# ------------------------------------------------------------------------------- secrets
+
+cmd_secret() {
+  local action="${1:-ls}" name="${2:-}" value
+  touch "$ENV_FILE" && chmod 600 "$ENV_FILE"
+  case "$action" in
+    ls) sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$ENV_FILE" ;;
+    set)
+      [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "usage: agent secret set NAME [VALUE]"
+      if [[ $# -ge 3 ]]; then value="$3"
+      elif [[ -t 0 ]]; then read -rsp "$name: " value; echo
+      else value="$(cat)"; fi
+      value="${value%$'\n'}"
+      [[ -n $value ]] || die "empty value"
+      grep -v "^$name=" "$ENV_FILE" > "$ENV_FILE.new" || true
+      printf "%s='%s'\n" "$name" "${value//\'/\'\\\'\'}" >> "$ENV_FILE.new"
+      mv "$ENV_FILE.new" "$ENV_FILE" && chmod 600 "$ENV_FILE"
+      echo "stored $name; restarting the agent so it sees it"
+      cmd_restart >/dev/null ;;
+    rm)
+      [[ -n $name ]] || die "usage: agent secret rm NAME"
+      grep -v "^$name=" "$ENV_FILE" > "$ENV_FILE.new" || true
+      mv "$ENV_FILE.new" "$ENV_FILE" && chmod 600 "$ENV_FILE"
+      cmd_restart >/dev/null ;;
+    *) die "usage: agent secret set|ls|rm" ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------ lifecycle
+
+pid() { cat "$STATE/agent.pid" 2>/dev/null || true; }
+running() { local p; p="$(pid)"; [[ -n $p ]] && kill -0 "$p" 2>/dev/null; }
+
+# Each run is its own process group, so stopping it stops everything it started.
+kill_agent() { local p; p="$(pid)"; [[ -n $p ]] && kill -TERM -- "-$p" 2>/dev/null || true; }
+
+cmd_restart() { touch "$STATE/restart"; rm -f "$STATE/stopped"; kill_agent; echo "restarting"; }
+cmd_stop() { touch "$STATE/stopped"; kill_agent; echo "stopped; 'agent start' resumes it"; }
+cmd_start() { rm -f "$STATE/stopped"; echo "starting"; }
+
+# Keeps ~/app/agent.sh running. Crash loops back off up to five minutes; a deliberate
+# restart does not wait.
+cmd_supervise() {
+  local backoff=5 restarts=0 started code
+  while true; do
+    if [[ -e $STATE/stopped || ! -x $APP/agent.sh ]]; then sleep 3; continue; fi
+    if [[ -f $LOG && $(stat -c %s "$LOG") -gt $MAX_LOG_BYTES ]]; then mv -f "$LOG" "$LOG.1"; fi
+    echo "[agentcloud $(date -u '+%F %T')] starting ~/app/agent.sh" >> "$LOG"
+    started=$(date +%s)
+    (cd "$APP" && exec setsid bash -lc ./agent.sh) >> "$LOG" 2>&1 &
+    echo $! > "$STATE/agent.pid"
+    code=0; wait $! || code=$?
+    rm -f "$STATE/agent.pid"
+    case $code in
+      137) note="killed (out of memory, or stopped)" ;;
+      143) note="stopped" ;;
+      *) note="exited with code $code" ;;
+    esac
+    echo "[agentcloud $(date -u '+%F %T')] agent $note" >> "$LOG"
+    printf 'last_exit=%s\nlast_exit_at=%s\nrestarts=%s\n' "$code" "$(date -u '+%F %T')" "$restarts" > "$STATE/status"
+    if [[ -e $STATE/restart ]]; then rm -f "$STATE/restart"; backoff=5; continue; fi
+    restarts=$((restarts + 1))
+    if (( $(date +%s) - started < 60 )); then backoff=$(( backoff * 2 > 300 ? 300 : backoff * 2 )); else backoff=5; fi
+    sleep "$backoff"
+  done
+}
+
+cmd_status() {
+  if [[ -e $STATE/stopped ]]; then echo "agent:   stopped"
+  elif running; then echo "agent:   running (pid $(pid), started $(ps -o lstart= -p "$(pid)" | xargs))"
+  elif [[ -x $APP/agent.sh ]]; then echo "agent:   restarting"
+  else echo "agent:   none yet; run 'agent init'"; fi
+  [[ -f $STATE/status ]] && sed 's/^/         /' "$STATE/status"
+  local used max
+  used=$(cat /sys/fs/cgroup/memory.current 2>/dev/null || echo 0)
+  max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)
+  echo "memory:  $((used / 1048576)) MB used of $([[ $max == max ]] && echo "unlimited" || echo "$((max / 1048576)) MB")"
+  echo "disk:    $(df -h "$HOME" | awk 'NR==2 {print $3 " used of " $2}')"
+  echo "secrets: $(cmd_secret ls | paste -sd ' ' - || true)"
+}
+
+cmd_logs() {
+  [[ -f $LOG ]] || { echo "no output yet"; return; }
+  if [[ ${1:-} == -f ]]; then tail -n 50 -f "$LOG"; else tail -n 200 "$LOG"; fi
+}
+
+cmd_once() {
+  [[ -f $APP/agent.py ]] || die "'agent once' runs SDK agents (agent.py); this agent has none"
+  set -a; [[ -f $ENV_FILE ]] && . "$ENV_FILE"; set +a
+  cd "$APP" && AGENT_PROVIDER="$(sed -n 's/^export AGENT_PROVIDER=//p' agent.sh)" python3 agent.py --once
+}
+
+# ------------------------------------------------------------------------------- wallet
+
+cmd_wallet() {
+  local lease="$STATE/lease.json" address rest status balance until
+  address=$(jq -r .wallet "$lease"); rest=$(jq -r .chain.rest "$lease")
+  balance=$(curl -fsS "$rest/cosmos/bank/v1beta1/balances/$address/by_denom?denom=utia" | jq -r .balance.amount)
+  status=$(curl -fsS "$(jq -r .status_url "$lease")")
+  until=$(jq -r '(.started_at + (.paid_utia * 3600 / .price_utia_per_hour | floor)) | todate' <<<"$status")
+  echo "address:    $address"
+  echo "balance:    $(awk "BEGIN {print $balance / 1000000}") TIA"
+  echo "rent:       $(awk "BEGIN {print $(jq .price_utia_per_hour <<<"$status") / 1000000}") TIA per hour"
+  echo "paid until: $until"
+  echo "mnemonic:   $STATE/wallet.mnemonic"
+}
+
+# ---------------------------------------------------------------------------- git deploy
+
+# A bare repo at ~/app.git whose pushes check out into ~/app, install dependencies, and
+# restart the agent.
+cmd_setup() {
+  mkdir -p "$APP"
+  [[ -d $HOME/app.git ]] && return
+  git init -q --bare -b main "$HOME/app.git"
+  cat > "$HOME/app.git/hooks/post-receive" <<'EOF'
+#!/bin/sh
+while read -r old new ref; do
+  git --work-tree="$HOME/app" --git-dir="$HOME/app.git" checkout -q -f "${ref#refs/heads/}"
+done
+cd "$HOME/app" || exit 1
+[ -f requirements.txt ] && pip install --user -q -r requirements.txt
+[ -f package.json ] && npm install --omit=dev --silent
+[ -f agent.sh ] && chmod +x agent.sh && echo "deployed; restarting the agent" && agent restart >/dev/null
+EOF
+  chmod +x "$HOME/app.git/hooks/post-receive"
+}
+
+case "${1:-}" in
+  init) shift; cmd_init "$@" ;;
+  secret) shift; cmd_secret "$@" ;;
+  logs) shift; cmd_logs "$@" ;;
+  status) cmd_status ;;
+  restart) cmd_restart ;;
+  stop) cmd_stop ;;
+  start) cmd_start ;;
+  once) cmd_once ;;
+  wallet) cmd_wallet ;;
+  setup) cmd_setup ;;
+  supervise) cmd_supervise ;;
+  -h|--help|help|"") usage ;;
+  *) echo "agent: unknown command $1" >&2; usage 1 ;;
+esac

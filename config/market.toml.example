@@ -1,0 +1,22 @@
+# agentcloud market. Every field is optional; these are the defaults.
+
+listen = "127.0.0.1:8420"
+data_dir = "data/market"          # database and escrow key
+web_dir = "web/dist"              # the built web app
+escrow_fee_utia = 500             # added to first payments, pays the escrow's gas (worst case 500)
+poll_seconds = 6                  # how often the ledger reads new blocks
+pending_seconds = 1800            # how long a reserved lease waits for its first payment
+offline_after_seconds = 90        # an agent silent this long takes no new leases
+repository = ""                   # git URL shown in the setup instructions
+
+[chain]
+chain_id = "mocha-5"
+rest = "https://api.celestia-mocha.com"
+rpc = "https://rpc.celestia-mocha.com"
+denom = "utia"
+bech32_prefix = "celestia"
+gas_price = 0.004                 # Mocha's minimum
+send_gas = 75000                  # bank send between existing accounts (68.5k measured)
+new_recipient_gas = 20000         # extra when the recipient never held funds (14k measured)
+first_send_gas = 30000            # extra on a sender's first transaction (27k measured)
+explorer = "https://mocha.celenium.io"

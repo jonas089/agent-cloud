@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = ["crates/protocol", "crates/chain", "crates/market", "crates/provider"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+protocol = { package = "agentcloud-protocol", path = "crates/protocol" }
+chain = { package = "agentcloud-chain", path = "crates/chain" }
+
+anyhow = "1"
+base64 = "0.22"
+axum = "0.8"
+bip32 = { version = "0.5", features = ["std"] }
+bip39 = { version = "2", features = ["rand"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+clap = { version = "4", features = ["derive", "env"] }
+cosmrs = { version = "0.22", features = ["bip32"] }
+hex = "0.4"
+k256 = { version = "0.13", features = ["ecdsa", "sha256"] }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process", "signal", "fs"] }
+toml = "0.8"
+tower-http = { version = "0.6", features = ["fs", "trace", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+strip = true
