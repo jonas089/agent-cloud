@@ -26,15 +26,12 @@ DATA="$ROOT/data"
 STATE_DIR="$DATA/phala"
 LOCK="$ROOT/deploy/images.lock"
 REPO="ghcr.io/jonas089/agentcloud-provider"
-# Node 18 (prod9): auto-selection can land on nodes whose gateway never registers the CVM.
-NODE_ID="18"
-OS_IMAGE="dstack-0.5.9"
 # The on-chain KMS chains Phala Cloud offers, and where their app contracts are visible.
 # Empty for the off-chain KMS ("phala"), which has no contract.
 kms_rpc() { case "$1" in base) echo https://mainnet.base.org ;; ethereum) echo https://ethereum-rpc.publicnode.com ;; esac; }
 kms_explorer() { case "$1" in base) echo https://basescan.org ;; ethereum) echo https://etherscan.io ;; esac; }
 # Settings in an instance file that configure the CVM rather than being passed into it.
-DEPLOY_ONLY="INSTANCE_TYPE KMS"
+DEPLOY_ONLY="INSTANCE_TYPE KMS OS_IMAGE NODE_ID"
 
 usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { printf '\033[1;33m==>\033[0m %s\n' "$*"; }
@@ -63,9 +60,15 @@ load_instance() {
   [[ $NAME == agentcloud* ]] || die "instance names start with agentcloud"
   local file="$ROOT/deploy/instances/$NAME.env"
   [[ -f $file ]] || die "no $file"
-  INSTANCE_TYPE="$(sed -n 's/^INSTANCE_TYPE=//p' "$file")"
-  KMS="$(sed -n 's/^KMS=//p' "$file")"
+  setting() { sed -n "s/^$1=//p" "$file"; }
+  INSTANCE_TYPE="$(setting INSTANCE_TYPE)"
+  KMS="$(setting KMS)"
   KMS="${KMS:-base}"
+  # The OS images a KMS accepts differ (`phala kms base` lists them). Node 18 (prod9): auto-
+  # selection can land on nodes whose gateway never registers the CVM.
+  OS_IMAGE="$(setting OS_IMAGE)"
+  NODE_ID="$(setting NODE_ID)"
+  NODE_ID="${NODE_ID:-18}"
   mkdir -p "$STATE_DIR"
   CVM_ENV="$STATE_DIR/$NAME.cvm.env"
   grep -E '^[A-Z_]+=' "$file" | grep -vE "^($(echo $DEPLOY_ONLY | tr ' ' '|'))=" > "$CVM_ENV"
@@ -104,6 +107,31 @@ recorded_app_id() {
   phala cvms get --cvm-id "$app_id" --json 2>/dev/null | grep -q "\"name\": *\"$NAME\"" \
     || die "CVM $app_id is not named $NAME; refusing to touch it"
   echo "$app_id"
+}
+
+# Sends one transaction with an explicit nonce and waits until the chain has counted it, so
+# the next one never reuses a nonce a lagging, load-balanced RPC still reports.
+send_tx() { # <rpc> <contract> <signature> [args...]
+  local rpc="$1" contract="$2" me nonce
+  shift 2
+  me="$(cast wallet address --private-key "$DEPLOYER_KEY")"
+  nonce="$(cast nonce "$me" --rpc-url "$rpc")"
+  cast send "$contract" "$@" --nonce "$nonce" --private-key "$DEPLOYER_KEY" --rpc-url "$rpc" >/dev/null
+  until [[ $(cast nonce "$me" --rpc-url "$rpc") -gt $nonce ]]; do sleep 2; done
+}
+
+# Pushes the instance's adjustable settings to its CVM. The phala CLI refuses this for apps on
+# an on-chain KMS (it looks for a KMS key it never fetches), so the values are encrypted here
+# the way dstack expects (X25519 with the app's env key, then AES-256-GCM, see
+# deploy/seal-env.py) and sent through the API. They are not secret; what protects renters is
+# the frozen code, not these values.
+push_settings() { # <app id>
+  local key encrypted body
+  key="$(phala api "/cvms/$1" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["kms_info"]["encrypted_env_pubkey"])')" \
+    || die "could not read the env key of $1"
+  encrypted="$(python3 "$ROOT/deploy/seal-env.py" "$key" "$CVM_ENV")" || die "could not encrypt the settings"
+  body="$(python3 -c 'import json,sys; print(json.dumps({"encrypted_env": sys.argv[1]}))' "$encrypted")"
+  phala api -X PATCH "/cvms/$1/envs" -d "$body" >/dev/null || die "pushing the settings failed"
 }
 
 contract_owner() { # <app id>
@@ -161,7 +189,7 @@ cmd_up() {
       phala deploy --cvm-id "$app_id" --compose "$COMPOSE" -e "$CVM_ENV" ${onchain[@]+"${onchain[@]}"} --wait
     else
       say "updating the adjustable settings of $NAME ($app_id)"
-      phala envs update --cvm-id "$app_id" -e "$CVM_ENV" ${onchain[@]+"${onchain[@]}"}
+      push_settings "$app_id"
     fi
     return
   fi
@@ -169,7 +197,7 @@ cmd_up() {
   say "creating $NAME: ${INSTANCE_TYPE:-tdx.small}, KMS $KMS, node $NODE_ID"
   local out
   out="$(phala deploy --name "$NAME" --compose "$COMPOSE" -e "$CVM_ENV" --instance-type "${INSTANCE_TYPE:-tdx.small}" \
-    --node-id "$NODE_ID" --image "$OS_IMAGE" --no-dev-os --kms "$KMS" ${onchain[@]+"${onchain[@]}"} --wait --json 2>&1)" \
+    --node-id "$NODE_ID" ${OS_IMAGE:+--image "$OS_IMAGE"} --no-dev-os --kms "$KMS" ${onchain[@]+"${onchain[@]}"} --wait --json 2>&1)" \
     || { printf '%s\n' "$out" >&2; die "phala deploy failed"; }
   # The CLI prints progress before its JSON, so take the first app id found in any object.
   app_id="$(printf '%s' "$out" | python3 -c '
@@ -212,8 +240,13 @@ cmd_freeze() {
   [[ $(echo "$owner" | tr '[:upper:]' '[:lower:]') == $(echo "$me" | tr '[:upper:]' '[:lower:]') ]] \
     || die "the deployer key does not own $contract (owner is $owner)"
   say "freezing $NAME: $contract on $KMS. This cannot be undone."
-  cast send "$contract" 'disableUpgrades()' --private-key "$DEPLOYER_KEY" --rpc-url "$rpc" >/dev/null
-  cast send "$contract" 'renounceOwnership()' --private-key "$DEPLOYER_KEY" --rpc-url "$rpc" >/dev/null
+  # Any genuine node in the KMS's scope may run the frozen code, so the instance can move if
+  # its machine fails; what it runs stays fixed by the compose hash.
+  if [[ $(cast call "$contract" 'allowAnyDevice()(bool)' --rpc-url "$rpc") != true ]]; then
+    send_tx "$rpc" "$contract" 'setAllowAnyDevice(bool)' true
+  fi
+  send_tx "$rpc" "$contract" 'disableUpgrades()'
+  send_tx "$rpc" "$contract" 'renounceOwnership()'
   for _ in $(seq 10); do
     [[ $(contract_owner "$app_id") == 0x0000000000000000000000000000000000000000 ]] && break
     sleep 3
