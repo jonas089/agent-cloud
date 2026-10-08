@@ -83,6 +83,9 @@ pub struct OfferSpec {
     /// Where anyone can check the attestation of the TEE the sandboxes run in.
     #[serde(default)]
     pub attestation_url: Option<String>,
+    /// The on-chain contract that decides which code may run this offer, when it has one.
+    #[serde(default)]
+    pub governance: Option<Governance>,
     pub price_utia_per_hour: u64,
     /// How long a lease survives without payment before it is ended and wiped.
     pub grace_seconds: u64,
@@ -90,6 +93,18 @@ pub struct OfferSpec {
     pub slots: u32,
     /// Where rent is paid to.
     pub payout_address: String,
+}
+
+/// An offer governed on chain: Phala's on-chain KMS only releases the TEE's keys to code
+/// whose compose hash `app_contract` allows, so whoever owns that contract decides what may
+/// run. With the owner renounced, nobody can change it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Governance {
+    /// An EVM JSON-RPC endpoint of the chain the contract is on.
+    pub rpc: String,
+    pub app_contract: String,
+    /// Block explorer base URL, e.g. `https://basescan.org`.
+    pub explorer: String,
 }
 
 /// `GET /api/offers`

@@ -130,11 +130,6 @@ impl Provider {
             let lease_json = self.describe(lease, wallet.wallet.address().as_ref());
             let provision = Provision { lease, wallet_mnemonic: &mnemonic, lease_json: &lease_json };
             let port = match running.iter().find(|s| s.lease_id == lease.id) {
-                Some(sandbox) if !sandbox.current => {
-                    self.sandboxes.upgrade(sandbox, provision, &self.offer).await?;
-                    tracing::info!(lease = %lease.id, "sandbox moved to the current image");
-                    sandbox.port
-                }
                 Some(sandbox) if sandbox.running => sandbox.port,
                 Some(sandbox) => {
                     self.sandboxes.start(sandbox, &self.offer).await?;

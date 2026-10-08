@@ -8,6 +8,7 @@ poll_seconds = 6                  # how often the ledger reads new blocks
 pending_seconds = 1800            # how long a reserved lease waits for its first payment
 offline_after_seconds = 90        # an agent silent this long takes no new leases
 repository = ""                   # git URL shown in the setup instructions
+retired_offers = []               # offer ids that take no new leases (an instance being replaced)
 
 [chain]
 chain_id = "mocha-5"

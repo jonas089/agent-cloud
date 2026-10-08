@@ -77,6 +77,7 @@ async fn offers(State(market): State<Arc<Market>>) -> Result<Json<Vec<Offer>>, F
     let offers = market.store.read(|db| {
         db.offers_seen_since(unix_now() - LISTED_FOR_SECONDS)?
             .into_iter()
+            .filter(|offer| !market.config.retired_offers.contains(&offer.id))
             .map(|offer| present_offer(&market, db, offer))
             .collect()
     })?;
@@ -94,7 +95,7 @@ async fn create_lease(
     let lease = market.store.write(|db| {
         let offer = db.offer(&request.offer_id)?.ok_or(Failure::NotFound("no such offer"))?;
         let offer = present_offer(&market, db, offer)?;
-        if !offer.online || offer.free_slots == 0 {
+        if !offer.online || offer.free_slots == 0 || market.config.retired_offers.contains(&offer.id) {
             return Err(Failure::Conflict("this offer is not taking new leases right now").into());
         }
         let pending = db.leases_of_renter(&request.renter)?.into_iter().filter(|l| l.status == LeaseStatus::Pending);

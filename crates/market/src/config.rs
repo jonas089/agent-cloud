@@ -26,6 +26,9 @@ pub struct Config {
     pub offline_after_seconds: i64,
     /// Git URL of this code, shown in the setup instructions.
     pub repository: String,
+    /// Offers that take no new leases and are no longer listed, e.g. an instance being replaced.
+    /// Their running leases carry on until they end.
+    pub retired_offers: Vec<String>,
     pub chain: ChainConfig,
 }
 
@@ -40,6 +43,7 @@ impl Default for Config {
             pending_seconds: 30 * 60,
             offline_after_seconds: 90,
             repository: String::new(),
+            retired_offers: Vec::new(),
             chain: ChainConfig::default(),
         }
     }
