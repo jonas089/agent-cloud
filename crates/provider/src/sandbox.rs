@@ -57,6 +57,8 @@ pub struct Sandbox {
     pub lease_id: String,
     pub port: u16,
     pub running: bool,
+    /// Whether it runs the image this provider would start it with now.
+    pub current: bool,
 }
 
 /// What goes into a new sandbox besides the renter's key.
@@ -126,28 +128,45 @@ impl Sandboxes {
     }
 
     pub async fn list(&self) -> anyhow::Result<Vec<Sandbox>> {
-        let format = format!("{{{{.Label \"{LEASE_LABEL}\"}}}}\t{{{{.Label \"{PORT_LABEL}\"}}}}\t{{{{.State}}}}");
+        let format = format!(
+            "{{{{.Label \"{LEASE_LABEL}\"}}}}\t{{{{.Label \"{PORT_LABEL}\"}}}}\t{{{{.State}}}}\t{{{{.Image}}}}"
+        );
         let output = docker(&["ps", "--all", "--filter", &format!("label={LEASE_LABEL}"), "--format", &format]).await?;
         output
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| {
                 let mut fields = line.split('\t');
-                let (Some(lease_id), Some(port), Some(state)) = (fields.next(), fields.next(), fields.next()) else {
+                let (Some(lease_id), Some(port), Some(state), Some(image)) =
+                    (fields.next(), fields.next(), fields.next(), fields.next())
+                else {
                     bail!("unexpected docker ps output: {line}");
                 };
                 let port = port.parse().context("bad port label")?;
-                Ok(Sandbox { lease_id: lease_id.to_string(), port, running: state == "running" })
+                let (running, current) = (state == "running", image == self.image);
+                Ok(Sandbox { lease_id: lease_id.to_string(), port, running, current })
             })
             .collect()
     }
 
     /// Starts a sandbox on the first port no other sandbox uses.
     pub async fn create(&self, provision: Provision<'_>, offer: &OfferSpec, taken: &[u16]) -> anyhow::Result<Sandbox> {
-        let lease = provision.lease;
         let port = (self.config.first_port..=self.config.last_port)
             .find(|port| !taken.contains(port))
             .context("no free sandbox port")?;
+        self.create_on(provision, offer, port).await
+    }
+
+    /// Moves a sandbox onto the current image: a new container on the same port with the same
+    /// home, so the renter's files, secrets and agent carry over and the connection stays the
+    /// same. Only what was in `/tmp` is lost.
+    pub async fn upgrade(&self, sandbox: &Sandbox, provision: Provision<'_>, offer: &OfferSpec) -> anyhow::Result<()> {
+        docker(&["rm", "--force", &container_name(&sandbox.lease_id)]).await?;
+        self.create_on(provision, offer, sandbox.port).await.map(drop)
+    }
+
+    async fn create_on(&self, provision: Provision<'_>, offer: &OfferSpec, port: u16) -> anyhow::Result<Sandbox> {
+        let lease = provision.lease;
         let uid = FIRST_UID + u32::from(port - self.config.first_port);
         self.write_identity(&lease.id, uid)?;
         self.mount_home(&lease.id, uid, offer.disk_gb).await?;
@@ -185,7 +204,7 @@ impl Sandboxes {
             self.image.clone(),
         ];
         docker(&args.iter().map(String::as_str).collect::<Vec<_>>()).await?;
-        Ok(Sandbox { lease_id: lease.id.clone(), port, running: true })
+        Ok(Sandbox { lease_id: lease.id.clone(), port, running: true, current: true })
     }
 
     /// Starts a stopped sandbox again, after a reboot or a crash, remounting its home first.
