@@ -154,7 +154,15 @@ export function sshCommand(c: Connection, identity?: string): string {
 
 /** A `~/.ssh/config` entry, so the sandbox is just `ssh agentcloud-<lease>`. */
 export function sshConfig(c: Connection, lease: string, identity: string): string {
-  const lines = [`Host agentcloud-${lease}`, `  HostName ${c.host}`, `  User ${c.user}`, `  Port ${c.port}`, `  IdentityFile ${identity}`];
+  // Ports are reused by later leases, each with its own host key, so known_hosts is keyed by lease.
+  const lines = [
+    `Host agentcloud-${lease}`,
+    `  HostName ${c.host}`,
+    `  HostKeyAlias agentcloud-${lease}`,
+    `  User ${c.user}`,
+    `  Port ${c.port}`,
+    `  IdentityFile ${identity}`,
+  ];
   if (c.tls) lines.push(`  ProxyCommand openssl s_client -quiet -connect %h:%p -servername %h`);
   return lines.join("\n");
 }
