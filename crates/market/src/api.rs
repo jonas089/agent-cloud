@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{OriginalUri, Path, Query, State};
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -24,6 +24,7 @@ use protocol::unix_now;
 use rand::Rng;
 use serde::Deserialize;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::store::StoredOffer;
 use crate::Market;
@@ -51,7 +52,10 @@ pub fn router(market: Arc<Market>) -> Router {
         .route("/agent/leases", get(agent_leases))
         .route("/agent/leases/{id}/sandbox", put(agent_sandbox))
         .fallback(|| async { Failure::NotFound("no such endpoint") });
-    Router::new().nest("/api", api).fallback_service(web).with_state(market)
+    // Browsers revalidate on every visit, so a new release shows up at once; the assets are
+    // content-hashed, so revalidating them is a cheap 304.
+    let no_cache = SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    Router::new().nest("/api", api).fallback_service(web).layer(no_cache).with_state(market)
 }
 
 // -------------------------------------------------------------------- public

@@ -131,20 +131,25 @@ function OfferCard({ offer, onRent }: { offer: Offer; onRent: () => void }) {
 /** Whether the offer's code is frozen, read from its app contract by this browser. */
 function CodeStatus({ governance }: { governance: Governance }) {
   const control = usePolling(() => readCodeControl(governance), 60_000, governance.app_contract);
-  const link = (text: string) => (
-    <a href={contractUrl(governance)} target="_blank" rel="noreferrer">
-      {text}
+  const contract = (
+    <a href={contractUrl(governance)} target="_blank" rel="noreferrer" className="mono">
+      {shorten(governance.app_contract, 6)}
     </a>
   );
-  if (control.error) return <span className="muted">could not read {link("the contract")}</span>;
-  if (!control.value) return <span className="muted">checking on chain</span>;
-  return control.value.frozen ? (
+  const verdict = control.error ? (
+    <span className="muted">Could not read the contract.</span>
+  ) : !control.value ? (
+    <span className="muted">Checking on chain.</span>
+  ) : control.value.frozen ? (
     <span>
-      <span className="frozen">Frozen</span>, nobody can change it. {link("Contract")}, owner 0x0.
+      <span className="frozen">Frozen.</span> Owner is 0x0, so nobody can change the code.
     </span>
   ) : (
+    <span>Upgradeable by its owner {shorten(control.value.owner, 4)}.</span>
+  );
+  return (
     <span>
-      Upgradeable by {link(shorten(control.value.owner, 4))}
+      Governed by contract {contract}. {verdict}
     </span>
   );
 }
