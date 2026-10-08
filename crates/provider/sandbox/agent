@@ -91,6 +91,7 @@ while true; do
 
 Keep notes for your next run in MEMORY.md, and read it first if it exists."
   ${spec#*|} || echo "run failed"
+  echo \$(( \$(date +%s) + \${AGENT_INTERVAL:-600} )) > "\$HOME/.agentcloud/next_run"
   sleep "\${AGENT_INTERVAL:-600}"
 done
 EOF
@@ -106,21 +107,41 @@ EOF
 
 # ------------------------------------------------------------------------------- secrets
 
+# The variable a provider's tools read, for the short names people type.
+secret_alias() {
+  case "${1,,}" in
+    openai|codex) echo OPENAI_API_KEY ;;
+    anthropic|claude|claude-code) echo ANTHROPIC_API_KEY ;;
+    gemini|google|gemini-cli) echo GEMINI_API_KEY ;;
+    grok|xai) echo XAI_API_KEY ;;
+    deepseek) echo DEEPSEEK_API_KEY ;;
+    openrouter) echo OPENROUTER_API_KEY ;;
+    mistral) echo MISTRAL_API_KEY ;;
+    *) echo "$1" ;;
+  esac
+}
+
 cmd_secret() {
   local action="${1:-ls}" name="${2:-}" value
   touch "$ENV_FILE" && chmod 600 "$ENV_FILE"
   case "$action" in
     ls) sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$ENV_FILE" ;;
     set)
+      local alias; alias="$(secret_alias "$name")"
+      if [[ $alias != "$name" ]]; then echo "storing it as $alias, the name ${name,,} tools read"; name="$alias"; fi
       if [[ $name == sk-* || $name == *-* || ${#name} -gt 40 ]]; then
         die "that looks like a key, not a name. Use: agent secret set OPENAI_API_KEY (then paste the key)"
       fi
       [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "usage: agent secret set NAME [VALUE], e.g. agent secret set OPENAI_API_KEY"
       [[ $name =~ ^[A-Z_][A-Z0-9_]*$ ]] || echo "note: agents read upper-case names such as OPENAI_API_KEY; '$name' is stored as written" >&2
       if [[ $# -ge 3 ]]; then value="$3"
-      elif [[ -t 0 ]]; then read -rsp "$name: " value; echo
-      else value="$(cat)"; fi
-      value="${value%$'\n'}"
+      else
+        if [[ -t 0 ]]; then read -rsp "paste $name, then Enter: " value; echo
+        else value="$(cat)"; fi
+        value="${value%$'\n'}"
+        # A pasted key has no spaces; a pasted command does.
+        [[ $value != *[[:space:]]* ]] || die "that has spaces in it, so it is not a key. Run the command again and paste only the key."
+      fi
       [[ -n $value ]] || die "empty value"
       grep -v "^$name=" "$ENV_FILE" > "$ENV_FILE.new" || true
       printf "%s='%s'\n" "$name" "${value//\'/\'\\\'\'}" >> "$ENV_FILE.new"
@@ -144,7 +165,7 @@ running() { local p; p="$(pid)"; [[ -n $p ]] && kill -0 "$p" 2>/dev/null; }
 # Each run is its own process group, so stopping it stops everything it started.
 kill_agent() { local p; p="$(pid)"; [[ -n $p ]] && kill -TERM -- "-$p" 2>/dev/null || true; }
 
-cmd_restart() { touch "$STATE/restart"; rm -f "$STATE/stopped"; kill_agent; echo "restarting"; }
+cmd_restart() { mkdir -p "$STATE"; touch "$STATE/restart"; rm -f "$STATE/stopped"; kill_agent; echo "restarting"; }
 cmd_stop() { touch "$STATE/stopped"; kill_agent; echo "stopped; 'agent start' resumes it"; }
 cmd_start() { rm -f "$STATE/stopped"; echo "starting"; }
 
@@ -176,6 +197,15 @@ cmd_supervise() {
 }
 
 cmd_status() {
+  if [[ -f $APP/agent.py ]]; then
+    set -a; [[ -f $ENV_FILE ]] && . "$ENV_FILE"; set +a
+    local provider; provider="$(sed -n 's/^export AGENT_PROVIDER=//p' "$APP/agent.sh" 2>/dev/null)"
+    (cd "$APP" && AGENT_PROVIDER="$provider" python3 agent.py --describe)
+  fi
+  if [[ -f $STATE/next_run ]]; then
+    local next; next=$(cat "$STATE/next_run")
+    echo "next:    run at $(date -u -d "@$next" '+%H:%M:%S') UTC, in $(( (next - $(date +%s)) / 60 )) min"
+  fi
   if [[ -e $STATE/stopped ]]; then echo "agent:   stopped"
   elif running; then echo "agent:   running (pid $(pid), started $(ps -o lstart= -p "$(pid)" | xargs))"
   elif [[ -x $APP/agent.sh ]]; then echo "agent:   restarting"

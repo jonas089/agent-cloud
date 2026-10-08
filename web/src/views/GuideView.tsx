@@ -63,7 +63,11 @@ export function GuideView({ session }: { session: Session }) {
               <CodeBlock code={"agent init openai\nagent secret set OPENAI_API_KEY\nnano ~/app/TASK.md\nagent logs -f"} />
             </li>
           </ol>
-          <p>That's it. The agent runs every ten minutes, keeps notes between runs, and restarts itself if it crashes.</p>
+          <p>
+            That's it. The agent runs every ten minutes, keeps notes between runs, and restarts itself if it crashes.
+            Name the exact API or URL it should use in <code>TASK.md</code>: models guess endpoints from memory, and
+            those guesses go stale.
+          </p>
         </section>
 
         <section id="agents">
@@ -140,7 +144,10 @@ export function GuideView({ session }: { session: Session }) {
               <tr>
                 <td>agent secret set NAME</td>
                 <td>keys</td>
-                <td>Store or replace a key; the agent restarts with it. Values are never shown again.</td>
+                <td>
+                  Store or replace a key; the agent restarts with it. <code>agent secret set openai</code> works too. Keys
+                  are hidden from the agent's logs and from what it sends the model.
+                </td>
               </tr>
               <tr>
                 <td>agent restart · stop · start</td>

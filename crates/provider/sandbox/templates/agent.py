@@ -41,6 +41,26 @@ COMPATIBLE = {
     "mistral": ("https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
 }
 MODEL = os.environ.get("MODEL") or DEFAULT_MODELS.get(PROVIDER, "")
+STATE = Path.home() / ".agentcloud"
+
+
+def load_secrets() -> dict[str, str]:
+    """The values of everything in ~/.env, so they can be kept out of what the model and the
+    log see. Very short values are skipped: they would redact ordinary words."""
+    env = Path.home() / ".env"
+    names = [line.split("=", 1)[0] for line in env.read_text().splitlines() if "=" in line] if env.exists() else []
+    return {name: os.environ[name] for name in names if len(os.environ.get(name, "")) >= 8}
+
+
+SECRETS = load_secrets()
+
+
+def redact(text: str) -> str:
+    """Replaces every secret value in `text` with its name. Runs on everything the agent's
+    commands print before the model or the log sees it, whatever the model asks for."""
+    for name, value in SECRETS.items():
+        text = text.replace(value, f"[secret {name}]")
+    return text
 
 SYSTEM = """You are an autonomous agent running in your own Linux sandbox inside a confidential
 TEE. You act through the `shell` tool (bash, as an unprivileged user, with internet access,
@@ -64,7 +84,7 @@ def shell(command: str) -> str:
         done = subprocess.run(
             ["bash", "-lc", command], cwd=APP, capture_output=True, text=True, timeout=180
         )
-        output = (done.stdout + done.stderr).strip() or "(no output)"
+        output = redact((done.stdout + done.stderr).strip()) or "(no output)"
         return f"exit {done.returncode}\n{output[-12000:]}"
     except subprocess.TimeoutExpired:
         return "error: the command took longer than 180 seconds and was stopped"
@@ -100,7 +120,7 @@ def run_anthropic() -> str:
         final = message
         for block in message.content:
             if block.type == "tool_use":
-                print(f"$ {block.input.get('command', '')}", flush=True)
+                print(redact(f"$ {block.input.get('command', '')}"), flush=True)
     if final is None:
         return "(no response)"
     if final.stop_reason == "refusal":
@@ -127,7 +147,7 @@ def run_openai() -> str:
             return reply.content or ""
         for call in reply.tool_calls:
             command = json.loads(call.function.arguments).get("command", "")
-            print(f"$ {command}", flush=True)
+            print(redact(f"$ {command}"), flush=True)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": shell(command)})
     return "(stopped after the step limit)"
 
@@ -148,15 +168,25 @@ def run_once() -> None:
     backend = {"anthropic": run_anthropic, "gemini": run_gemini}.get(PROVIDER, run_openai)
     print(f"--- run at {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S} UTC with {PROVIDER} {MODEL}", flush=True)
     try:
-        print(backend(), flush=True)
+        print(redact(backend()), flush=True)
     except Exception as error:  # A failed run is logged; the next one tries again.
-        print(f"run failed: {type(error).__name__}: {error}", flush=True)
+        print(redact(f"run failed: {type(error).__name__}: {error}"), flush=True)
+
+
+def describe() -> None:
+    """What `agent status` shows about this agent."""
+    print(f"model:   {MODEL} via {PROVIDER}\nevery:   {INTERVAL // 60} min ({INTERVAL} s, AGENT_INTERVAL)")
 
 
 if __name__ == "__main__":
+    if "--describe" in sys.argv:
+        describe()
+        sys.exit(0)
     if "--once" in sys.argv:
         run_once()
         sys.exit(0)
     while True:
         run_once()
+        STATE.mkdir(exist_ok=True)
+        (STATE / "next_run").write_text(str(int(time.time()) + INTERVAL))
         time.sleep(INTERVAL)
