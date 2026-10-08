@@ -1,0 +1,5 @@
+# The images every instance runs, pinned by digest. deploy/phala.sh renders them into the
+# compose file, so they are part of each instance's measured code. Update with
+# `deploy/phala.sh images`.
+PROVIDER_IMAGE=ghcr.io/jonas089/agentcloud-provider@sha256:e48e173d3f3071605ee3607eeefce66c6d5c69177e6885c2b37971ae8f995cbf
+SANDBOX_IMAGE=ghcr.io/jonas089/agentcloud-provider@sha256:f067f0d9d6cc05ddd0c51d3b62ca737729a8cf93fcba7391691788c596789844

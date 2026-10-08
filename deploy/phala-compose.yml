@@ -1,6 +1,12 @@
-# What runs in the Phala CVM: the provider and nothing else. Phala measures this file into the
-# CVM's attestation, so both images are pinned by digest and the whole provider config lives
-# here. Rendered by deploy/phala.sh, which fills in the __PLACEHOLDERS__.
+# What runs in a Phala CVM: the provider and nothing else. Phala measures this file into the
+# CVM's attestation and, with on-chain KMS, only releases the CVM's keys to the hashes its app
+# contract allows. So everything security-relevant is fixed here: both images by digest, the
+# isolation settings, the port range. Rendered by deploy/phala.sh, which fills in the
+# __PLACEHOLDERS__ from deploy/images.lock.
+#
+# The ${...} values are the instance's adjustable settings (deploy/instances/<name>.env). They
+# are not measured, so they can change on a frozen instance; the provider reads each as a typed
+# value, so none of them can reach the settings below.
 services:
   provider:
     image: __PROVIDER_IMAGE__
@@ -10,12 +16,21 @@ services:
     volumes:
       # Sandboxes are containers on the CVM's own Docker.
       - /var/run/docker.sock:/var/run/docker.sock
-      # Agent key and wallets, on the CVM's encrypted disk.
+      # Agent key, wallets and homes, on the CVM's encrypted disk.
       - provider-data:/data
     environment:
       RUST_LOG: info
+      AGENTCLOUD_MARKET_URL: ${MARKET_URL}
+      AGENTCLOUD_PAYOUT_ADDRESS: ${PAYOUT_ADDRESS}
+      AGENTCLOUD_OFFER_NAME: ${OFFER_NAME}
+      AGENTCLOUD_PRICE_UTIA_PER_HOUR: ${PRICE_UTIA_PER_HOUR}
+      AGENTCLOUD_SLOTS: ${SLOTS}
+      AGENTCLOUD_CPUS: ${CPUS}
+      AGENTCLOUD_MEMORY_MB: ${MEMORY_MB}
+      AGENTCLOUD_DISK_GB: ${DISK_GB}
+      AGENTCLOUD_GRACE_SECONDS: ${GRACE_SECONDS}
       AGENTCLOUD_PROVIDER_TOML: |
-        market = "__MARKET__"
+        market = "set by AGENTCLOUD_MARKET_URL"
         data_dir = "/data"
 
         [offer]
@@ -30,12 +45,13 @@ services:
         price_utia_per_hour = 83333
         grace_seconds = 900
         slots = 10
-        payout_address = "__PAYOUT__"
-
+        payout_address = "set by AGENTCLOUD_PAYOUT_ADDRESS"
+__GOVERNANCE__
         [sandbox]
         image = "__SANDBOX_IMAGE__"
+        # One port per slot; SLOTS may go up to the size of this range.
         first_port = 2200
-        last_port = 2209
+        last_port = 2239
         connect_host = "${DSTACK_APP_ID}-{port}.${DSTACK_GATEWAY_DOMAIN}"
         connect_port = 443
         connect_tls = true
