@@ -10,7 +10,7 @@ FROM ubuntu:24.04
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       openssh-server ca-certificates curl wget git gnupg python3 python3-pip python3-venv \
-      jq less nano vim-tiny tmux unzip iptables \
+      jq less nano vim-tiny tmux unzip iptables ncurses-term \
  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*
@@ -27,6 +27,8 @@ RUN printf '[global]\nbreak-system-packages = true\n' > /etc/pip.conf \
  && printf '%s\n' \
       'export PATH="$HOME/.local/bin:$PATH"' \
       'export DISABLE_AUTOUPDATER=1' \
+      '# Terminals the image has no entry for (Ghostty, WezTerm, ...) get a close common one.' \
+      'infocmp "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color' \
       '[ -f "$HOME/.env" ] && set -a && . "$HOME/.env" && set +a' \
       > /etc/profile.d/agentcloud.sh
 

@@ -112,7 +112,11 @@ cmd_secret() {
   case "$action" in
     ls) sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$ENV_FILE" ;;
     set)
-      [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "usage: agent secret set NAME [VALUE]"
+      if [[ $name == sk-* || $name == *-* || ${#name} -gt 40 ]]; then
+        die "that looks like a key, not a name. Use: agent secret set OPENAI_API_KEY (then paste the key)"
+      fi
+      [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "usage: agent secret set NAME [VALUE], e.g. agent secret set OPENAI_API_KEY"
+      [[ $name =~ ^[A-Z_][A-Z0-9_]*$ ]] || echo "note: agents read upper-case names such as OPENAI_API_KEY; '$name' is stored as written" >&2
       if [[ $# -ge 3 ]]; then value="$3"
       elif [[ -t 0 ]]; then read -rsp "$name: " value; echo
       else value="$(cat)"; fi
