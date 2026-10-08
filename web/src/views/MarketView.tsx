@@ -5,9 +5,10 @@
 
 import { useState } from "react";
 import { market, sshKeyCommitment } from "../api";
-import type { Lease, Offer } from "../api";
+import type { Governance, Lease, Offer } from "../api";
 import type { Session } from "../App";
-import { duration, tia, tiaPrice } from "../format";
+import { duration, shorten, tia, tiaPrice } from "../format";
+import { contractUrl, readCodeControl } from "../governance";
 import { generateSshKey } from "../sshKey";
 import { usePolling } from "../ui";
 import { sendTia } from "../wallet";
@@ -111,11 +112,40 @@ function OfferCard({ offer, onRent }: { offer: Offer; onRent: () => void }) {
             </dd>
           </>
         )}
+        {offer.governance && (
+          <>
+            <dt>Code</dt>
+            <dd>
+              <CodeStatus governance={offer.governance} />
+            </dd>
+          </>
+        )}
       </dl>
       <button className="primary" disabled={!available} onClick={onRent}>
         {!offer.online ? "Provider offline" : offer.free_slots === 0 ? "Fully rented" : "Rent"}
       </button>
     </article>
+  );
+}
+
+/** Whether the offer's code is frozen, read from its app contract by this browser. */
+function CodeStatus({ governance }: { governance: Governance }) {
+  const control = usePolling(() => readCodeControl(governance), 60_000, governance.app_contract);
+  const link = (text: string) => (
+    <a href={contractUrl(governance)} target="_blank" rel="noreferrer">
+      {text}
+    </a>
+  );
+  if (control.error) return <span className="muted">could not read {link("the contract")}</span>;
+  if (!control.value) return <span className="muted">checking on chain</span>;
+  return control.value.frozen ? (
+    <span>
+      <span className="frozen">Frozen</span>, nobody can change it. {link("Contract")}, owner 0x0.
+    </span>
+  ) : (
+    <span>
+      Upgradeable by {link(shorten(control.value.owner, 4))}
+    </span>
   );
 }
 

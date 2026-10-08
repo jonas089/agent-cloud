@@ -1,9 +1,11 @@
 // Getting started: from nothing to a running agent in a few commands, what the sandbox
 // offers, and in plain words why nobody else can read your API keys.
 
+import { market } from "../api";
 import type { Session } from "../App";
-import { tia } from "../format";
-import { CodeBlock } from "../ui";
+import { shorten, tia } from "../format";
+import { contractUrl } from "../governance";
+import { CodeBlock, usePolling } from "../ui";
 
 const SECTIONS = [
   { id: "quickstart", title: "Quickstart" },
@@ -11,12 +13,15 @@ const SECTIONS = [
   { id: "own", title: "Deploy your own code" },
   { id: "manage", title: "Manage it" },
   { id: "safe", title: "Why your keys are safe" },
+  { id: "code", title: "Who controls the code" },
   { id: "limits", title: "Resources" },
   { id: "pay", title: "Paying" },
 ];
 
 export function GuideView({ session }: { session: Session }) {
   const { config } = session;
+  const offers = usePolling(market.offers, 60_000);
+  const governed = (offers.value ?? []).filter((offer) => offer.governance);
 
   return (
     <div className="docs">
@@ -197,6 +202,44 @@ export function GuideView({ session }: { session: Session }) {
             Two things to keep in mind: the AI provider of course sees the key you use with it, and so does any code you run
             in your own sandbox. Give agents keys with spending limits, like an exchange key that can trade but not
             withdraw.
+          </p>
+        </section>
+
+        <section id="code">
+          <h2>Who controls the code</h2>
+          <p>
+            <strong>What runs.</strong> The machine's configuration pins two images by digest: the provider, which starts
+            and wipes sandboxes and pays rent, and the sandbox you log in to. Phala measures that configuration into the
+            machine's attestation.
+          </p>
+          <p>
+            <strong>What enforces it.</strong> Phala's KMS gives the machine its keys only if the configuration's hash is
+            on the allowlist of the machine's contract on Base. Without those keys it cannot read its disk or prove who it
+            is.
+          </p>
+          <p>
+            <strong>Why it cannot change.</strong> Only the contract's owner can add a hash or upgrade the contract. The
+            owner was renounced to the zero address and upgrades were disabled, so nobody can, us included. Check it on
+            the contract page: <code>owner</code> reads <code>0x000…000</code>.
+            {governed.length > 0 && " Contracts: "}
+            {governed.map((offer, i) => (
+              <span key={offer.id}>
+                {i > 0 && ", "}
+                <a href={contractUrl(offer.governance!)} target="_blank" rel="noreferrer">
+                  {shorten(offer.governance!.app_contract, 4)}
+                </a>
+              </span>
+            ))}
+            {governed.length > 0 && "."}
+          </p>
+          <p>
+            <strong>What we can still change.</strong> Price, number of slots, payout address and market address. They are
+            inputs to the frozen code, not part of it, and none of them reach your files or keys. We can also shut a machine
+            down; your agent's wallet mnemonic is in <code>~/.agentcloud</code>, so its funds do not depend on the machine.
+          </p>
+          <p>
+            <strong>What you still trust.</strong> Intel TDX, Phala's KMS (its own contract, run by Phala), and, until host
+            keys are part of the attestation, that your first <code>ssh</code> connection reaches this machine.
           </p>
         </section>
 

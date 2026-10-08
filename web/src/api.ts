@@ -38,10 +38,20 @@ export interface OfferSpec {
   gpu: string | null;
   /** Where to check the attestation of the TEE the sandboxes run in. */
   attestation_url: string | null;
+  /** The on-chain contract that decides which code may run this offer, if it has one. */
+  governance: Governance | null;
   price_utia_per_hour: number;
   grace_seconds: number;
   slots: number;
   payout_address: string;
+}
+
+export interface Governance {
+  /** EVM JSON-RPC endpoint of the chain the contract is on. */
+  rpc: string;
+  app_contract: string;
+  /** Block explorer base URL. */
+  explorer: string;
 }
 
 export interface Offer extends OfferSpec {

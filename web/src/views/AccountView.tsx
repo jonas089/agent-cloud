@@ -3,7 +3,7 @@
 
 import { market } from "../api";
 import type { Session } from "../App";
-import { duration, shorten, tia, when } from "../format";
+import { duration, shorten, tia, tiaPrice, when } from "../format";
 import { Copy, ExplorerLink, Stat, usePolling } from "../ui";
 
 export function AccountView({ session }: { session: Session }) {
@@ -34,13 +34,13 @@ export function AccountView({ session }: { session: Session }) {
         <Stat label="Wallet balance" value={tia(a.balance_utia)} sub={<Copy text={a.address}>{shorten(a.address)}</Copy>} />
         <Stat
           label="Burn rate"
-          value={`${tia(burn)} / min`}
-          sub={`${tia(a.rent_utia_per_hour)} rent and ${tia(a.gas_utia_per_hour)} gas`}
+          value={`${tiaPrice(burn)} / hour`}
+          sub={`${tiaPrice(a.rent_utia_per_hour)} rent and ${tiaPrice(a.gas_utia_per_hour)} gas`}
         />
-        <Stat label="Per day" value={tia(burn * 60 * 24)} sub={`${a.leases.filter((l) => l.status === "active").length} active leases`} />
+        <Stat label="Per day" value={tiaPrice(burn * 24)} sub={`${a.leases.filter((l) => l.status === "active").length} active leases`} />
         <Stat
           label="Agents last"
-          value={burn === 0 ? "No spending" : agentFunds === 0 ? "Unfunded" : duration((agentFunds / burn) * 60)}
+          value={burn === 0 ? "No spending" : agentFunds === 0 ? "Unfunded" : duration((agentFunds / burn) * 3600)}
           sub={`${tia(agentFunds)} across ${a.agent_wallets.length} agent wallet${a.agent_wallets.length === 1 ? "" : "s"}`}
         />
       </div>

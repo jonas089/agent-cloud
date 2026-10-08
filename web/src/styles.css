@@ -73,7 +73,7 @@ h1, h2, h3 { font-family: var(--display); letter-spacing: -0.01em; margin: 0; }
 
 .page { flex: 1; width: 100%; max-width: 1400px; margin: 0 auto; padding: 2.25rem 2.5rem 3rem; }
 .footer { max-width: 1400px; width: 100%; margin: 0 auto; padding: 1.25rem 2.5rem 2rem; color: var(--muted); font-size: 0.82rem; border-top: 1px solid var(--line); }
-.stack { display: grid; gap: 1.75rem; }
+.stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.75rem; }
 .section-title { font-size: 1.05rem; color: var(--grey); font-weight: 600; margin-bottom: 0.9rem; }
 
 .panel { background: var(--surface); border-radius: var(--radius); padding: 1.5rem; min-width: 0; }
@@ -228,7 +228,20 @@ h1, h2, h3 { font-family: var(--display); letter-spacing: -0.01em; margin: 0; }
 
 @media (max-width: 720px) {
   .topbar-inner { flex-wrap: wrap; gap: 0.75rem; padding: 0.75rem 1rem; }
-  .tabs { order: 3; width: 100%; overflow-x: auto; }
+  .tabs { order: 3; width: 100%; flex-wrap: wrap; gap: 0.2rem; }
+  .tab { padding: 0.4rem 0.7rem; font-size: 0.86rem; }
+  .agent-wallet-head { flex-wrap: wrap; gap: 0.25rem 1rem; }
+  .pending-row { flex-wrap: wrap; }
+  .pending-state { max-width: none; text-align: left; }
+  .docs-table, .docs-table tbody, .docs-table tr, .docs-table td { display: block; }
+  .docs-table tr { padding: 0.6rem 0; border-bottom: 1px solid var(--line); }
+  .docs-table td, .docs-table td:first-child, .docs-table td:nth-child(2) { padding: 0.1rem 0; border: 0; white-space: normal; overflow-wrap: anywhere; }
+  .table { font-size: 0.8rem; }
+  .table th, .table td { padding: 0.6rem 0.4rem; }
+  .table-panel { padding: 0.25rem 0.5rem; }
+  .docs-body { padding: 1.25rem 1rem; }
+  .summary { grid-template-columns: minmax(0, 1fr); gap: 0.25rem; }
+  .summary dd { text-align: left; margin-bottom: 0.75rem; }
   .network { display: none; }
   .page { padding: 1.5rem 1rem 2rem; }
   .footer { padding: 1rem; }
@@ -286,6 +299,7 @@ h1, h2, h3 { font-family: var(--display); letter-spacing: -0.01em; margin: 0; }
 .pending-main .mono { font-size: 0.8rem; }
 .pending-state { color: var(--grey); text-align: right; max-width: 50%; }
 .small { font-size: 0.82rem; }
+.frozen { color: var(--accent); font-weight: 700; }
 
 @media (max-width: 960px) {
   .agent-grid { grid-template-columns: minmax(0, 1fr); }
