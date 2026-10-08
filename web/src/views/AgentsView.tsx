@@ -3,7 +3,7 @@
 // cancelling are transfers signed in Keplr.
 
 import { useState } from "react";
-import { expiresAt, market, paidUntil, sshCommand, sshConfig, sshKeyCommitment } from "../api";
+import { expiresAt, market, paidUntil, sshConfig, sshKeyCommitment } from "../api";
 import type { Account, Lease } from "../api";
 import type { Session } from "../App";
 import { duration, shorten, tia, tiaPrice, toUtia, when } from "../format";
@@ -172,12 +172,6 @@ function AgentCard({ lease, name, account, session, onSent }: AgentCardProps) {
                   </span>
                 </li>
               </ol>
-              <p className="hint">
-                Key saved elsewhere? Change <code>IdentityFile</code>. No config file?{" "}
-                <Copy text={sshCommand(lease.connection, keyFile(lease))}>
-                  <span className="linklike">Copy a one-line ssh command</span>
-                </Copy>
-              </p>
             </>
           ) : (
             <p className="wait">Checking your key on chain and starting the sandbox. This takes a few seconds.</p>
